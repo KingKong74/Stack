@@ -1,0 +1,15 @@
+{
+  "hooks": {
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"$HOME/.stack/stack-session-end.mjs\"",
+            "async": true
+          }
+        ]
+      }
+    ]
+  }
+}
