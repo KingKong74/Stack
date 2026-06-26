@@ -1,17 +1,22 @@
-import type { Roadmap as RoadmapData, Priority } from '../types';
+import type { Roadmap as RoadmapData, RoadmapItem, Priority } from '../types';
 import { PRIORITY_META } from '../lib/ui';
 
-export function Roadmap({ roadmap, onAdd }: { roadmap: RoadmapData; onAdd: (p: Priority) => void }) {
+export function Roadmap({
+  roadmap, onAdd, onToggle,
+}: {
+  roadmap: RoadmapData; onAdd: (p: Priority) => void; onToggle: (item: RoadmapItem) => void;
+}) {
   return (
     <div>
       <div className="section-bar" style={{ marginBottom: 6 }}>
         <div className="titles">
           <div className="h">Roadmap</div>
-          <div className="subtitle">MoSCoW prioritization</div>
+          <div className="subtitle">MoSCoW prioritisation</div>
         </div>
       </div>
       <div className="subtitle" style={{ marginBottom: 20 }}>
-        What must ship, what should, what could, and what won't — this round.
+        What must ship, what should, what could, and what won't — this round. Tick items off as you go;
+        the dashboard progress is computed from Must/Should completion.
       </div>
 
       <div className="road-grid">
@@ -25,10 +30,23 @@ export function Roadmap({ roadmap, onAdd }: { roadmap: RoadmapData; onAdd: (p: P
                 <span className="count">{items.length}</span>
               </div>
               <div className="road-items">
-                {items.map((it, i) => (
-                  <div className="road-item" key={i}>
-                    <div className="t">{it.title}</div>
-                    {it.note && <div className="note">{it.note}</div>}
+                {items.map((it) => (
+                  <div className={`road-item ${it.done ? 'done' : ''}`} key={it.id}>
+                    <button
+                      className={`road-check ${it.done ? 'on' : ''}`}
+                      onClick={() => onToggle(it)}
+                      aria-label={it.done ? 'Mark not done' : 'Mark done'}
+                      title={it.done ? 'Mark not done' : 'Mark done'}
+                    >
+                      {it.done ? '✓' : ''}
+                    </button>
+                    <div className="road-body">
+                      <div className="t">
+                        {it.title}
+                        {it.source === 'hook' && <span className="auto-cue" title="Auto-extracted from a push">auto</span>}
+                      </div>
+                      {it.note && <div className="note">{it.note}</div>}
+                    </div>
                   </div>
                 ))}
                 <button className="road-add" onClick={() => onAdd(col.key)}>+ Add</button>

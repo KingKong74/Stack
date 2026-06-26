@@ -1,110 +1,282 @@
 import { Router } from 'express';
-import { q, pool } from '../db.js';
+import { pool } from '../db.js';
+import {
+  slugify, fingerprint, asList, oneOf, TINTS,
+  SEVERITIES, BUCKETS,
+} from '../util.js';
 
 export const ingest = Router();
 
-// Normalise an array-of-strings field coming from the hook.
-function asList(v) {
-  if (Array.isArray(v)) return v.map((x) => String(x)).filter(Boolean).slice(0, 50);
-  return [];
+const str = (v, len) => (v ? String(v).slice(0, len) : null);
+
+// Candidate bug list off the wire: [{ title, severity }].
+function asBugCandidates(v) {
+  if (!Array.isArray(v)) return [];
+  return v
+    .map((b) => ({
+      title: str(b?.title, 300),
+      severity: oneOf(b?.severity, SEVERITIES, 'medium'),
+    }))
+    .filter((b) => b.title)
+    .slice(0, 25);
 }
 
-function slugify(s) {
-  return String(s || '')
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, '-')
-    .replace(/^-+|-+$/g, '')
-    .slice(0, 64) || 'untitled';
+// Candidate next-step list off the wire: [{ title, priority }].
+function asStepCandidates(v) {
+  if (!Array.isArray(v)) return [];
+  return v
+    .map((s) => ({
+      title: str(s?.title, 300),
+      bucket: oneOf(s?.priority, BUCKETS, 'should'), // default bucket: should
+    }))
+    .filter((s) => s.title)
+    .slice(0, 25);
 }
 
 /**
  * POST /api/ingest
- * Body shape (all session.* optional except a project identity):
+ *
+ * Body shape (everything optional except a project identity):
  * {
  *   project: { slug?, name?, repo? },
  *   session: {
- *     session_id?, summary?, current_phase?, next_steps?[], blockers?[],
- *     files_touched?[], tools_used?[], branch?, cwd?, model?, reason?,
- *     message_count?, started_at?, ended_at?
+ *     session_id?, commit_hash?, branch?, cwd?, model?, reason?, message_count?,
+ *     summary?, current_phase?, next_steps?[], blockers?[],
+ *     files_touched?[], tools_used?[], tags?[],
+ *     in_progress?[], next_up?[], working_well?[]
+ *   },
+ *   extract: {
+ *     bugs?: [{ title, severity }],
+ *     next_steps?: [{ title, priority }]
  *   }
  * }
+ *
+ * One transaction: upsert project, record the session (idempotent on
+ * commit/session id), refresh the live resume fields with COALESCE, then land
+ * the auto-extracted bugs and roadmap items (deduped by fingerprint, honouring
+ * tombstones, never touching manual items).
  */
 ingest.post('/', async (req, res) => {
   const body = req.body || {};
   const p = body.project || {};
   const s = body.session || {};
+  const extract = body.extract || {};
 
   const slug = slugify(p.slug || p.name || s.cwd?.split('/').pop());
   const name = (p.name || p.slug || slug).toString().slice(0, 200);
-  const repo = p.repo ? String(p.repo).slice(0, 300) : null;
+  const repo = str(p.repo, 300);
+  const commit = str(s.commit_hash, 80);
 
   const session = {
-    session_id: s.session_id ? String(s.session_id).slice(0, 200) : null,
-    summary: s.summary ? String(s.summary).slice(0, 8000) : null,
-    current_phase: s.current_phase ? String(s.current_phase).slice(0, 400) : null,
+    session_id: str(s.session_id, 200),
+    commit_hash: commit,
+    summary: str(s.summary, 8000),
+    current_phase: str(s.current_phase, 400),
     next_steps: asList(s.next_steps),
     blockers: asList(s.blockers),
     files_touched: asList(s.files_touched),
     tools_used: asList(s.tools_used),
-    branch: s.branch ? String(s.branch).slice(0, 200) : null,
-    cwd: s.cwd ? String(s.cwd).slice(0, 500) : null,
-    model: s.model ? String(s.model).slice(0, 100) : null,
-    reason: s.reason ? String(s.reason).slice(0, 100) : null,
+    tags: asList(s.tags, 8, 40),
+    in_progress: asList(s.in_progress),
+    next_up: asList(s.next_up),
+    working_well: asList(s.working_well),
+    branch: str(s.branch, 200),
+    cwd: str(s.cwd, 500),
+    model: str(s.model, 100),
+    reason: str(s.reason, 100),
     message_count: Number.isFinite(s.message_count) ? Math.trunc(s.message_count) : null,
   };
+
+  const bugCandidates = asBugCandidates(extract.bugs);
+  const stepCandidates = asStepCandidates(extract.next_steps);
 
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
 
-    // Upsert project identity. Keep repo fresh if supplied.
-    const up = await client.query(
-      `INSERT INTO projects (slug, name, repo, last_session_at)
-       VALUES ($1, $2, $3, now())
-       ON CONFLICT (slug) DO UPDATE
-         SET name = EXCLUDED.name,
-             repo = COALESCE(EXCLUDED.repo, projects.repo),
-             last_session_at = now(),
-             updated_at = now()
-       RETURNING id`,
-      [slug, name, repo]
-    );
-    const projectId = up.rows[0].id;
+    // --- 1. Upsert project identity (first push creates it + assigns a tint) ---
+    let projectId;
+    const found = await client.query('SELECT id FROM projects WHERE slug = $1', [slug]);
+    if (found.rows.length) {
+      projectId = found.rows[0].id;
+      await client.query(
+        `UPDATE projects
+            SET name = $2,
+                repo = COALESCE($3, repo),
+                last_session_at = now(),
+                updated_at = now()
+          WHERE id = $1`,
+        [projectId, name, repo]
+      );
+    } else {
+      const { rows: cnt } = await client.query('SELECT count(*)::int AS n FROM projects');
+      const tint = TINTS[cnt[0].n % TINTS.length];
+      const ins = await client.query(
+        `INSERT INTO projects (slug, name, repo, tint, last_session_at)
+         VALUES ($1, $2, $3, $4, now())
+         RETURNING id`,
+        [slug, name, repo, tint]
+      );
+      projectId = ins.rows[0].id;
+    }
 
-    // Record the session as an immutable checkpoint.
-    await client.query(
-      `INSERT INTO sessions
-         (project_id, session_id, summary, current_phase, next_steps, blockers,
-          files_touched, tools_used, branch, cwd, model, reason, message_count, source)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,'hook')`,
-      [
-        projectId, session.session_id, session.summary, session.current_phase,
-        JSON.stringify(session.next_steps), JSON.stringify(session.blockers),
-        JSON.stringify(session.files_touched), JSON.stringify(session.tools_used),
-        session.branch, session.cwd, session.model, session.reason, session.message_count,
-      ]
-    );
+    // --- 2. Record the session, idempotent on commit hash / session id ---
+    let existingSession = null;
+    if (commit) {
+      const r = await client.query(
+        'SELECT id FROM sessions WHERE project_id = $1 AND commit_hash = $2 LIMIT 1',
+        [projectId, commit]
+      );
+      existingSession = r.rows[0] || null;
+    }
+    if (!existingSession && session.session_id) {
+      const r = await client.query(
+        'SELECT id FROM sessions WHERE project_id = $1 AND session_id = $2 LIMIT 1',
+        [projectId, session.session_id]
+      );
+      existingSession = r.rows[0] || null;
+    }
 
-    // The newest checkpoint becomes the project's live "where we are at".
-    // Only overwrite fields the session actually carried, so a thin checkpoint
-    // doesn't wipe a richer previous state.
+    const sessionCols = [
+      session.session_id, session.commit_hash, session.summary, session.current_phase,
+      JSON.stringify(session.next_steps), JSON.stringify(session.blockers),
+      JSON.stringify(session.files_touched), JSON.stringify(session.tools_used),
+      JSON.stringify(session.tags), session.branch, session.cwd, session.model,
+      session.reason, session.message_count,
+    ];
+
+    if (existingSession) {
+      // Re-running the hook for the same push refreshes the row, never duplicates it.
+      await client.query(
+        `UPDATE sessions SET
+           session_id=$2, commit_hash=$3, summary=$4, current_phase=$5,
+           next_steps=$6::jsonb, blockers=$7::jsonb, files_touched=$8::jsonb,
+           tools_used=$9::jsonb, tags=$10::jsonb, branch=$11, cwd=$12, model=$13,
+           reason=$14, message_count=$15
+         WHERE id=$1`,
+        [existingSession.id, ...sessionCols]
+      );
+    } else {
+      await client.query(
+        `INSERT INTO sessions
+           (project_id, session_id, commit_hash, summary, current_phase, next_steps,
+            blockers, files_touched, tools_used, tags, branch, cwd, model, reason,
+            message_count, source)
+         VALUES ($1,$2,$3,$4,$5,$6::jsonb,$7::jsonb,$8::jsonb,$9::jsonb,$10::jsonb,
+                 $11,$12,$13,$14,$15,'hook')`,
+        [projectId, ...sessionCols]
+      );
+    }
+
+    // --- 3. Refresh the project's live resume state (COALESCE / keep-if-empty) ---
     await client.query(
       `UPDATE projects SET
          summary       = COALESCE($2, summary),
          current_phase = COALESCE($3, current_phase),
-         next_steps    = CASE WHEN $4::jsonb = '[]'::jsonb THEN next_steps ELSE $4::jsonb END,
+         next_steps    = CASE WHEN $4::jsonb = '[]'::jsonb THEN next_steps   ELSE $4::jsonb END,
          blockers      = $5::jsonb,
-         status        = CASE WHEN status = 'archived' THEN status ELSE 'active' END,
+         in_progress   = CASE WHEN $6::jsonb = '[]'::jsonb THEN in_progress  ELSE $6::jsonb END,
+         next_up       = CASE WHEN $7::jsonb = '[]'::jsonb THEN next_up      ELSE $7::jsonb END,
+         working_well  = CASE WHEN $8::jsonb = '[]'::jsonb THEN working_well ELSE $8::jsonb END,
          updated_at    = now()
        WHERE id = $1`,
       [
         projectId, session.summary, session.current_phase,
         JSON.stringify(session.next_steps), JSON.stringify(session.blockers),
+        JSON.stringify(session.in_progress), JSON.stringify(session.next_up),
+        JSON.stringify(session.working_well),
       ]
     );
 
+    // --- 4. Land auto-extracted bugs ---
+    const dismissed = async (kind, fp) => {
+      const r = await client.query(
+        'SELECT 1 FROM dismissed_items WHERE project_id=$1 AND kind=$2 AND fingerprint=$3',
+        [projectId, kind, fp]
+      );
+      return r.rows.length > 0;
+    };
+
+    let createdBugs = 0;
+    let relinkedBugs = 0;
+    {
+      const { rows } = await client.query(
+        `SELECT COALESCE(MAX((substring(bug_key from '^BUG-([0-9]+)$'))::int), 0) AS n
+           FROM bugs WHERE project_id = $1`,
+        [projectId]
+      );
+      let n = rows[0].n;
+      const seen = new Set();
+      for (const cand of bugCandidates) {
+        const fp = fingerprint(cand.title);
+        if (!fp || seen.has(fp)) continue;
+        seen.add(fp);
+        if (await dismissed('bug', fp)) continue;
+
+        const existing = await client.query(
+          `SELECT id FROM bugs WHERE project_id=$1 AND fingerprint=$2 AND source='hook'`,
+          [projectId, fp]
+        );
+        if (existing.rows.length) {
+          // Already tracked — point it at this commit instead of duplicating.
+          await client.query(
+            'UPDATE bugs SET link_ref = COALESCE($2, link_ref), updated_at = now() WHERE id = $1',
+            [existing.rows[0].id, commit]
+          );
+          relinkedBugs++;
+        } else {
+          n++;
+          await client.query(
+            `INSERT INTO bugs (project_id, bug_key, title, severity, status, link_ref, source, fingerprint)
+             VALUES ($1,$2,$3,$4,'open',$5,'hook',$6)`,
+            [projectId, `BUG-${n}`, cand.title, cand.severity, commit, fp]
+          );
+          createdBugs++;
+        }
+      }
+    }
+
+    // --- 5. Land auto-extracted roadmap items ---
+    let createdSteps = 0;
+    {
+      const seen = new Set();
+      for (const cand of stepCandidates) {
+        const fp = fingerprint(cand.title);
+        if (!fp || seen.has(fp)) continue;
+        seen.add(fp);
+        if (await dismissed('roadmap', fp)) continue;
+
+        const existing = await client.query(
+          `SELECT id FROM roadmap_items WHERE project_id=$1 AND fingerprint=$2 AND source='hook'`,
+          [projectId, fp]
+        );
+        if (existing.rows.length) {
+          await client.query('UPDATE roadmap_items SET updated_at = now() WHERE id = $1', [
+            existing.rows[0].id,
+          ]);
+        } else {
+          const pos = await client.query(
+            'SELECT COALESCE(MAX(position), -1) + 1 AS p FROM roadmap_items WHERE project_id=$1 AND bucket=$2',
+            [projectId, cand.bucket]
+          );
+          await client.query(
+            `INSERT INTO roadmap_items (project_id, bucket, title, note, done, position, source, fingerprint)
+             VALUES ($1,$2,$3,'',false,$4,'hook',$5)`,
+            [projectId, cand.bucket, cand.title, pos.rows[0].p, fp]
+          );
+          createdSteps++;
+        }
+      }
+    }
+
     await client.query('COMMIT');
-    res.json({ ok: true, project: slug });
+    res.json({
+      ok: true,
+      project: slug,
+      session: existingSession ? 'updated' : 'created',
+      bugs: { created: createdBugs, relinked: relinkedBugs },
+      roadmap: { created: createdSteps },
+    });
   } catch (err) {
     await client.query('ROLLBACK');
     console.error('ingest failed:', err);

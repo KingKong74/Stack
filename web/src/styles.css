@@ -246,9 +246,17 @@ a { color: inherit; }
 .road-col-head .name { font-family: var(--disp); font-size: 14px; font-weight: 600; }
 .road-col-head .count { font-size: 12px; color: var(--faint); margin-left: auto; }
 .road-items { display: flex; flex-direction: column; gap: 9px; }
-.road-item { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 11px 12px; }
+.road-item { display: flex; align-items: flex-start; gap: 9px; background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 11px 12px; }
+.road-item .road-body { flex: 1; min-width: 0; }
 .road-item .t { font-size: 13px; font-weight: 500; line-height: 1.35; }
 .road-item .note { font-size: 11.5px; color: var(--muted); margin-top: 5px; line-height: 1.4; }
+.road-item.done .t { text-decoration: line-through; color: var(--faint); }
+.road-item.done .note { text-decoration: line-through; }
+.road-check { flex: none; width: 18px; height: 18px; margin-top: 1px; border: 1.5px solid var(--line-3); border-radius: 6px; color: #fff; font-size: 11px; line-height: 1; display: flex; align-items: center; justify-content: center; transition: background .12s, border-color .12s; }
+.road-check:hover { border-color: var(--muted); }
+.road-check.on { background: var(--green, #3f8a5b); border-color: var(--green, #3f8a5b); }
+/* small "auto" cue: marks hook-extracted items apart from hand-entered ones */
+.auto-cue { display: inline-block; margin-left: 7px; font-size: 9.5px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; color: var(--accent); background: #f0e7df; border: 1px solid var(--line-2); border-radius: 5px; padding: 1px 5px; vertical-align: middle; }
 .road-add { font-size: 12px; color: var(--fainter); padding: 6px 3px; text-align: left; }
 .road-add:hover { color: var(--accent); }
 
@@ -361,4 +369,21 @@ a { color: inherit; }
 
 /* card inner elements are spans — make them lay out as blocks */
 .pcard .pname, .pcard .track, .pcard .fill { display: block; }
+
+/* archived status badge (detail header) */
+.statusbadge.archived { color: #6b6458; background: #ece9e3; }
+.statusbadge.archived .dot { background: #8f897d; }
+
+/* inline action error (detail screen) */
+.action-error { margin: 0 0 16px; padding: 10px 14px; font-size: 13px; color: #b23b3b; background: #f7e9e7; border: 1px solid #e6cfca; border-radius: 10px; }
+
+/* ---------- token gate (first-load screen) ---------- */
+.gate { min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: 24px; }
+.gate-card { width: 100%; max-width: 380px; background: var(--card); border: 1px solid var(--line-2); border-radius: 18px; padding: 30px 28px; box-shadow: 0 18px 50px rgba(40, 30, 20, .08); }
+.gate-title { font-family: var(--disp); font-size: 20px; font-weight: 600; margin-bottom: 6px; }
+.gate-sub { font-size: 13px; line-height: 1.55; color: var(--muted); margin-bottom: 18px; }
+.gate .field-input { margin-bottom: 12px; }
+.gate-error { font-size: 12.5px; color: #b23b3b; margin-bottom: 12px; }
+.gate-btn { width: 100%; justify-content: center; }
+.gate-btn:disabled { opacity: .55; cursor: default; }
 .pcard .meta > * + * { margin-top: 0; }

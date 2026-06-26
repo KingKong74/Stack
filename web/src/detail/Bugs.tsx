@@ -49,7 +49,10 @@ export function Bugs({
               <div className={`sev-bar ${b.severity}`} />
               <div className="bug-body">
                 <div className="bug-main">
-                  <div className="bug-title">{b.title}</div>
+                  <div className="bug-title">
+                    {b.title}
+                    {b.source === 'hook' && <span className="auto-cue" title="Auto-extracted from a push">auto</span>}
+                  </div>
                   <div className="bug-meta">
                     <span className="mono">{b.id} · {b.meta}</span>
                     {b.linkRef && (

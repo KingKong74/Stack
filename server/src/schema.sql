@@ -1,11 +1,13 @@
--- Stack schema. Idempotent: safe to run on every boot.
+-- Stack schema. Idempotent: safe to run on every boot. New columns use
+-- ADD COLUMN IF NOT EXISTS and the data migrations are convergent (re-running
+-- them changes nothing once applied).
 
 CREATE TABLE IF NOT EXISTS projects (
   id              SERIAL PRIMARY KEY,
   slug            TEXT UNIQUE NOT NULL,
   name            TEXT NOT NULL,
   repo            TEXT,
-  status          TEXT NOT NULL DEFAULT 'active',      -- active | paused | done | archived
+  status          TEXT NOT NULL DEFAULT 'building',    -- live | building | paused | archived
   current_phase   TEXT,
   summary         TEXT,                                -- latest "where we are at"
   next_steps      JSONB NOT NULL DEFAULT '[]'::jsonb,
@@ -15,6 +17,19 @@ CREATE TABLE IF NOT EXISTS projects (
   created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at      TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+-- Project additions (resume card + dashboard fields).
+ALTER TABLE projects ADD COLUMN IF NOT EXISTS subtitle     TEXT;
+ALTER TABLE projects ADD COLUMN IF NOT EXISTS site_url     TEXT;
+ALTER TABLE projects ADD COLUMN IF NOT EXISTS tint         TEXT;
+ALTER TABLE projects ADD COLUMN IF NOT EXISTS in_progress  JSONB NOT NULL DEFAULT '[]'::jsonb;
+ALTER TABLE projects ADD COLUMN IF NOT EXISTS next_up      JSONB NOT NULL DEFAULT '[]'::jsonb;
+ALTER TABLE projects ADD COLUMN IF NOT EXISTS working_well JSONB NOT NULL DEFAULT '[]'::jsonb;
+
+-- Status vocabulary migration: active | paused | done | archived  ->
+-- live | building | paused | archived. Convert legacy 'active' rows to 'live'.
+ALTER TABLE projects ALTER COLUMN status SET DEFAULT 'building';
+UPDATE projects SET status = 'live' WHERE status = 'active';
 
 CREATE TABLE IF NOT EXISTS sessions (
   id            SERIAL PRIMARY KEY,
@@ -33,6 +48,72 @@ CREATE TABLE IF NOT EXISTS sessions (
   message_count INTEGER,
   source        TEXT NOT NULL DEFAULT 'hook',          -- hook | manual
   created_at    TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- Session additions: the commit the push landed on, and activity-feed tags.
+ALTER TABLE sessions ADD COLUMN IF NOT EXISTS commit_hash TEXT;
+ALTER TABLE sessions ADD COLUMN IF NOT EXISTS tags        JSONB NOT NULL DEFAULT '[]'::jsonb;
+
+-- Per-project bug tracker. bug_key is the human "BUG-N" id, unique per project.
+CREATE TABLE IF NOT EXISTS bugs (
+  id          SERIAL PRIMARY KEY,
+  project_id  INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  bug_key     TEXT NOT NULL,                           -- BUG-1, BUG-2, ... per project
+  title       TEXT NOT NULL,
+  severity    TEXT NOT NULL DEFAULT 'medium',          -- critical | high | medium | low
+  status      TEXT NOT NULL DEFAULT 'open',            -- open | investigating | fixing | fixed
+  link_ref    TEXT,                                    -- commit hash this bug was extracted from
+  source      TEXT NOT NULL DEFAULT 'manual',          -- hook | manual
+  fingerprint TEXT NOT NULL,
+  created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+  UNIQUE (project_id, bug_key)
+);
+-- Auto (hook) items dedupe on fingerprint; manual items are never deduped.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_bugs_auto_fp
+  ON bugs (project_id, fingerprint) WHERE source = 'hook';
+CREATE INDEX IF NOT EXISTS idx_bugs_project ON bugs (project_id, created_at DESC);
+
+-- Per-project MoSCoW roadmap.
+CREATE TABLE IF NOT EXISTS roadmap_items (
+  id          SERIAL PRIMARY KEY,
+  project_id  INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  bucket      TEXT NOT NULL DEFAULT 'should',          -- must | should | could | wont
+  title       TEXT NOT NULL,
+  note        TEXT,
+  done        BOOLEAN NOT NULL DEFAULT false,
+  position    INTEGER NOT NULL DEFAULT 0,              -- order within a bucket
+  source      TEXT NOT NULL DEFAULT 'manual',          -- hook | manual
+  fingerprint TEXT NOT NULL,
+  created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_roadmap_auto_fp
+  ON roadmap_items (project_id, fingerprint) WHERE source = 'hook';
+CREATE INDEX IF NOT EXISTS idx_roadmap_project ON roadmap_items (project_id, bucket, position);
+
+-- Per-project sticky notes.
+CREATE TABLE IF NOT EXISTS notes (
+  id          SERIAL PRIMARY KEY,
+  project_id  INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  text        TEXT NOT NULL,
+  colour      TEXT NOT NULL DEFAULT '#fef4a8',
+  source      TEXT NOT NULL DEFAULT 'manual',          -- hook | manual
+  fingerprint TEXT NOT NULL DEFAULT '',
+  created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_notes_project ON notes (project_id, created_at DESC);
+
+-- Tombstones: a deleted auto item must not be re-created by the next push.
+-- Keyed by project + kind (bug | roadmap) + fingerprint.
+CREATE TABLE IF NOT EXISTS dismissed_items (
+  id          SERIAL PRIMARY KEY,
+  project_id  INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  kind        TEXT NOT NULL,                           -- bug | roadmap
+  fingerprint TEXT NOT NULL,
+  created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+  UNIQUE (project_id, kind, fingerprint)
 );
 
 CREATE INDEX IF NOT EXISTS idx_sessions_project ON sessions (project_id, created_at DESC);

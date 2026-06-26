@@ -9,6 +9,10 @@ Each project tracks its live site, repo, deploy status, an auto-generated **acti
 **sticky notes**. Two screens: a cover-forward **projects dashboard** and a five-tab
 **project detail** (Overview · Bugs · Roadmap · Notes · Activity).
 
+A push does more than feed the resume card: the SessionEnd hook **auto-extracts candidate bugs
+and next-steps** into the trackers, and the dashboard **progress bar is computed** from
+roadmap/bug completion — never set by hand.
+
 The UI is a faithful build of the Atlas design handoff. Product name is **Stack** — it's a single
 constant (`web/src/lib/ui.ts` → `PRODUCT_NAME`) if you ever want to change it.
 
@@ -17,30 +21,22 @@ constant (`web/src/lib/ui.ts` → `PRODUCT_NAME`) if you ever want to change it.
 ```
 stack/
   web/      Vite + React + TypeScript frontend (the dashboard + detail UI)
-  server/   Express + Postgres API (ingest + projects) — the backend foundation
-  hook/     Claude Code SessionEnd hook — posts a checkpoint when a session ends
+  server/   Express + Postgres API (ingest + projects + collections)
+  hook/     Claude Code SessionEnd hook — posts a checkpoint + extraction package per session
   docker-compose.yml   db + server + web, for the mini-PC deploy
 ```
 
 ## Current state
 
-- **Frontend is complete and runnable today** against `localStorage` — all eight sample projects,
-  every tab, both modals, all interactions. Persistence lives behind one module,
-  `web/src/store.ts`, which is the single swap point for the real API.
-- **Backend + hook are the foundation**, carried in and syntax-checked. The `server` persists
-  projects and per-session checkpoints (which map onto the resume card + activity feed). Bug/roadmap/
-  note persistence and a few project-detail fields are the next backend step — see `CLAUDE.md`.
-
-## Run the frontend (no backend needed)
-
-```bash
-cd web
-npm install
-npm run dev      # http://localhost:5173
-```
-
-Data seeds into `localStorage` on first load. Everything you add (bugs, roadmap items, notes,
-new projects) persists in the browser.
+- **The app runs against the live API.** Persistence is Postgres, reached entirely through one
+  module, `web/src/store.ts` (every function is async and calls `/api/*` with a bearer token).
+  There is no localStorage data layer any more — the API is the source of truth.
+- **A first-load token gate** asks for the shared API token, keeps it in `localStorage`, and sends
+  it on every request. Any `401` clears it and returns to the gate.
+- **The ingest loop is complete:** a push upserts the project, records the session/activity row,
+  refreshes the resume fields (COALESCE so a thin checkpoint never wipes a good summary), and lands
+  auto-extracted bugs + roadmap items (deduped by fingerprint, tombstoned on delete, never touching
+  manual items).
 
 ## Run the full stack (compose)
 
@@ -50,14 +46,36 @@ cp .env.example .env
 docker compose up -d --build
 ```
 
-The **web** container binds `WEB_PORT` (default **8787**) — point your Cloudflare Tunnel / Tailscale
-at that. nginx serves the static bundle and reverse-proxies `/api` to the server container.
+Open the web container (host **`WEB_PORT`**, default **8787**), paste your **API_TOKEN** into the
+token gate, and you're in. nginx serves the static bundle and reverse-proxies `/api` to the server
+container. Point your Cloudflare Tunnel / Tailscale at that host port.
 
-## The SessionEnd hook (auto-fill "where you left off")
+Optional — drop in a couple of demo projects (off by default):
 
-When a Claude Code session ends, the hook derives the project from your git remote/branch, parses the
-transcript for what changed, optionally asks a cheap model for a structured summary, and POSTs a
-checkpoint to `STACK_API/api/ingest`. It never blocks Claude Code shutting down (always exits 0).
+```bash
+docker compose exec server npm run seed
+```
+
+## Run the frontend in dev
+
+```bash
+cd web
+npm install
+npm run dev      # http://localhost:5173
+```
+
+Vite proxies `/api` to `http://localhost:4000`, so you need the **server running** (compose, or
+`cd server && npm install && npm run dev` with `DATABASE_URL` + `API_TOKEN` set). The app opens on
+the token gate; paste the same `API_TOKEN` to continue.
+
+## The SessionEnd hook (auto-fill "where you left off" + extraction)
+
+When a Claude Code session ends, the hook derives the project from your git remote/branch, captures
+the current commit (short `rev-parse`), parses the transcript, and — if `ANTHROPIC_API_KEY` is set —
+asks a cheap model for a structured summary **plus** the resume sub-lists, a couple of tags,
+candidate bugs and prioritised next-steps. It POSTs that package to `STACK_API/api/ingest`. Without
+an API key it falls back to the last-message summary and empty extraction lists. It never blocks
+Claude Code shutting down (always exits 0).
 
 Three-step install on whichever machine runs Claude Code:
 
@@ -69,14 +87,14 @@ mkdir -p ~/.stack && cp hook/stack-session-end.mjs ~/.stack/
 cat > ~/.stack/env <<'ENV'
 STACK_API=https://stack.your-domain
 STACK_TOKEN=the-same-value-as-API_TOKEN
-# optional — enables structured AI summaries instead of a raw last-message fallback:
+# optional — enables structured AI summaries + extraction instead of a raw last-message fallback:
 ANTHROPIC_API_KEY=sk-ant-...
 ENV
 
 # 3. merge hook/settings.snippet.json into ~/.claude/settings.json
 ```
 
-Test it without a real session:
+Test it without a real session (fires a synthetic checkpoint with a demo bug + next-steps):
 
 ```bash
 node ~/.stack/stack-session-end.mjs --demo
@@ -86,4 +104,4 @@ node ~/.stack/stack-session-end.mjs --demo
 
 - en-AU spelling throughout.
 - No secrets in the repo. Secrets load at runtime from `.env` (server) and `~/.stack/env` (hook).
-- `web/src/store.ts` is the only module that touches persistence — keep it that way.
+- `web/src/store.ts` is the only module that touches the network — keep it that way.

@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import type { Project, ProjectStatus } from '../types';
 import { getProjects, createProject } from '../store';
 import { go } from '../lib/route';
@@ -6,19 +6,34 @@ import { PRODUCT_NAME } from '../lib/ui';
 import { NewProjectModal } from '../components/NewProjectModal';
 
 type Filter = 'all' | ProjectStatus;
-const STATUS_LABEL: Record<ProjectStatus, string> = { live: 'Live', building: 'Building', paused: 'Paused' };
+const STATUS_LABEL: Record<ProjectStatus, string> = {
+  live: 'Live', building: 'Building', paused: 'Paused', archived: 'Archived',
+};
 
 export function Dashboard() {
-  const [projects] = useState<Project[]>(() => getProjects());
+  const [projects, setProjects] = useState<Project[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
   const [filter, setFilter] = useState<Filter>('all');
   const [query, setQuery] = useState('');
   const [newOpen, setNewOpen] = useState(false);
+
+  useEffect(() => {
+    let live = true;
+    setLoading(true);
+    getProjects()
+      .then((ps) => { if (live) { setProjects(ps); setError(''); } })
+      .catch((e) => { if (live) setError(e?.message || 'Failed to load projects.'); })
+      .finally(() => { if (live) setLoading(false); });
+    return () => { live = false; };
+  }, []);
 
   const counts = useMemo(() => ({
     all: projects.length,
     live: projects.filter((p) => p.status === 'live').length,
     building: projects.filter((p) => p.status === 'building').length,
     paused: projects.filter((p) => p.status === 'paused').length,
+    archived: projects.filter((p) => p.status === 'archived').length,
   }), [projects]);
 
   const visible = useMemo(() => {
@@ -32,7 +47,19 @@ export function Dashboard() {
   const chips: { key: Filter; label: string }[] = [
     { key: 'all', label: 'All' }, { key: 'live', label: 'Live' },
     { key: 'building', label: 'Building' }, { key: 'paused', label: 'Paused' },
+    { key: 'archived', label: 'Archived' },
   ];
+
+  const onCreate = async (v: { name: string; subtitle: string; status: ProjectStatus }) => {
+    try {
+      const p = await createProject(v);
+      setNewOpen(false);
+      go.detail(p.id);
+    } catch (e) {
+      setNewOpen(false);
+      setError((e as Error)?.message || 'Could not create the project.');
+    }
+  };
 
   return (
     <div>
@@ -63,36 +90,33 @@ export function Dashboard() {
           </div>
         </div>
 
-        <div className="grid">
-          {visible.map((p) => (
-            <button key={p.id} className="pcard" style={{ background: p.tint }} onClick={() => go.detail(p.id)} aria-label={`Open ${p.name}`}>
-              <span className="stripe" />
-              <span className="scrim" />
-              <span className="statuspill">{STATUS_LABEL[p.status]}</span>
-              <span className="meta">
-                <span className="pname">{p.name}</span>
-                <span className="track"><span className="fill" style={{ width: `${p.progress}%` }} /></span>
-                <span className="metarow"><span>{p.metaLine}</span><span>{p.progress}%</span></span>
-              </span>
+        {loading ? (
+          <div className="empty-state"><div className="big">Loading…</div><div>Fetching your projects from the API.</div></div>
+        ) : error ? (
+          <div className="empty-state"><div className="big">Couldn't load projects</div><div>{error}</div></div>
+        ) : (
+          <div className="grid">
+            {visible.map((p) => (
+              <button key={p.id} className="pcard" style={{ background: p.tint }} onClick={() => go.detail(p.id)} aria-label={`Open ${p.name}`}>
+                <span className="stripe" />
+                <span className="scrim" />
+                <span className="statuspill">{STATUS_LABEL[p.status]}</span>
+                <span className="meta">
+                  <span className="pname">{p.name}</span>
+                  <span className="track"><span className="fill" style={{ width: `${p.progress}%` }} /></span>
+                  <span className="metarow"><span>{p.metaLine}</span><span>{p.progress}%</span></span>
+                </span>
+              </button>
+            ))}
+            <button className="newtile" onClick={() => setNewOpen(true)}>
+              <span className="plus">+</span>
+              <span className="lab">New project</span>
             </button>
-          ))}
-          <button className="newtile" onClick={() => setNewOpen(true)}>
-            <span className="plus">+</span>
-            <span className="lab">New project</span>
-          </button>
-        </div>
+          </div>
+        )}
       </div>
 
-      {newOpen && (
-        <NewProjectModal
-          onClose={() => setNewOpen(false)}
-          onCreate={(v) => {
-            const p = createProject(v);
-            setNewOpen(false);
-            go.detail(p.id);
-          }}
-        />
-      )}
+      {newOpen && <NewProjectModal onClose={() => setNewOpen(false)} onCreate={onCreate} />}
     </div>
   );
 }

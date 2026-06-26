@@ -3,7 +3,7 @@ import type { Note } from '../types';
 
 export function Notes({
   notes, onAdd, onDelete,
-}: { notes: Note[]; onAdd: (text: string) => void; onDelete: (id: string) => void }) {
+}: { notes: Note[]; onAdd: (text: string) => void; onDelete: (id: number) => void }) {
   const [draft, setDraft] = useState('');
 
   const add = () => {
@@ -38,7 +38,7 @@ export function Notes({
 
       <div className="notes-wall">
         {notes.map((n, i) => (
-          <div className="note" key={n.id} style={{ background: n.color, transform: `rotate(${i % 2 ? 0.7 : -0.7}deg)` }}>
+          <div className="note" key={n.id} style={{ background: n.colour, transform: `rotate(${i % 2 ? 0.7 : -0.7}deg)` }}>
             <button className="x" onClick={() => onDelete(n.id)} aria-label="Delete note">×</button>
             <div className="txt">{n.text}</div>
             <div className="when">{n.when}</div>

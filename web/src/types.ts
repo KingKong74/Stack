@@ -1,7 +1,8 @@
-export type ProjectStatus = 'live' | 'building' | 'paused';
+export type ProjectStatus = 'live' | 'building' | 'paused' | 'archived';
 export type Severity = 'critical' | 'high' | 'medium' | 'low';
 export type BugStatus = 'open' | 'investigating' | 'fixing' | 'fixed';
 export type Priority = 'must' | 'should' | 'could' | 'wont';
+export type Source = 'hook' | 'manual';   // hook = auto-extracted, manual = hand-entered
 
 export interface Resume {
   when: string;
@@ -20,12 +21,12 @@ export interface ProjectMeta {
 }
 
 export interface Project {
-  id: string;
+  id: string;              // the slug
   name: string;
   subtitle: string;
   tint: string;
   status: ProjectStatus;
-  progress: number;        // 0–100
+  progress: number;        // 0–100, computed server-side from roadmap/bug completion
   metaLine: string;        // dashboard card meta e.g. "pushed 2h ago"
   siteUrl: string;
   repoUrl: string;
@@ -40,12 +41,26 @@ export interface Bug {
   status: BugStatus;
   meta: string;            // "reported 2h ago"
   linkRef: string | null;  // commit hash
+  source: Source;
 }
 
-export interface RoadmapItem { title: string; note: string }
+export interface RoadmapItem {
+  id: number;
+  title: string;
+  note: string;
+  done: boolean;
+  bucket: Priority;
+  source: Source;
+}
 export interface Roadmap { must: RoadmapItem[]; should: RoadmapItem[]; could: RoadmapItem[]; wont: RoadmapItem[] }
 
-export interface Note { id: string; text: string; color: string; when: string }
+export interface Note {
+  id: number;
+  text: string;
+  colour: string;
+  when: string;
+  source: Source;
+}
 
 export interface Activity {
   hash: string;

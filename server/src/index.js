@@ -4,6 +4,9 @@ import { migrate, pool } from './db.js';
 import { requireToken } from './auth.js';
 import { ingest } from './routes/ingest.js';
 import { projects } from './routes/projects.js';
+import { bugs } from './routes/bugs.js';
+import { roadmap } from './routes/roadmap.js';
+import { notes } from './routes/notes.js';
 
 const app = express();
 app.disable('x-powered-by');
@@ -20,8 +23,12 @@ app.get('/api/health', async (_req, res) => {
   }
 });
 
-// Everything else needs the token.
+// Everything else needs the token. Per-project collection routers are mounted
+// at the more specific paths; the projects router handles the rest.
 app.use('/api/ingest', requireToken, ingest);
+app.use('/api/projects/:slug/bugs', requireToken, bugs);
+app.use('/api/projects/:slug/roadmap', requireToken, roadmap);
+app.use('/api/projects/:slug/notes', requireToken, notes);
 app.use('/api/projects', requireToken, projects);
 
 const port = process.env.PORT || 4000;

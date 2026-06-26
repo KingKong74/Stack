@@ -2,15 +2,16 @@
 // Stack — Claude Code SessionEnd hook.
 //
 // Fires when a Claude Code session ends. Reads the session transcript, works out
-// which project it belongs to (from git), summarises "where we are at", and POSTs
-// a checkpoint to your self-hosted Stack API. Never blocks Claude Code: it
-// always exits 0, even on failure.
+// which project it belongs to (from git), summarises "where we are at", extracts
+// candidate bugs and next-steps, and POSTs a checkpoint package to your
+// self-hosted Stack API. Never blocks Claude Code: it always exits 0.
 //
 // Config (environment variables):
 //   STACK_API     required  e.g. https://stack.example.com
 //   STACK_TOKEN   required  must match the server's API_TOKEN
-//   ANTHROPIC_API_KEY  optional  enables a structured AI summary (else falls back
-//                                to the last assistant message)
+//   ANTHROPIC_API_KEY  optional  enables a structured AI summary + extraction.
+//                                Without it, the hook sends the last assistant
+//                                message as the summary and empty extraction lists.
 //   STACK_MODEL   optional  default: claude-haiku-4-5-20251001
 //   STACK_MIN_MESSAGES  optional  skip sessions shorter than this (default 2)
 //
@@ -44,6 +45,9 @@ const DEMO = process.argv.includes('--demo');
 const MODEL = process.env.STACK_MODEL || 'claude-haiku-4-5-20251001';
 const MIN_MESSAGES = parseInt(process.env.STACK_MIN_MESSAGES || '2', 10);
 
+const SEVERITIES = ['critical', 'high', 'medium', 'low'];
+const BUCKETS = ['must', 'should', 'could', 'wont'];
+
 function log(...a) { process.stderr.write(`[stack] ${a.join(' ')}\n`); }
 function die0(msg) { if (msg) log(msg); process.exit(0); } // never block Claude Code
 
@@ -72,7 +76,8 @@ function projectFromGit(cwd) {
     name = (cwd || '').split('/').filter(Boolean).pop() || 'untitled';
     slug = name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
   }
-  return { repo, name, slug, branch };
+  const commit = git(cwd, ['rev-parse', '--short', 'HEAD']) || null;
+  return { repo, name, slug, branch, commit };
 }
 
 // ---- transcript parsing ----
@@ -122,11 +127,22 @@ function parseTranscript(path) {
   };
 }
 
-// ---- summarisation ----
+// ---- summarisation + extraction ----
+
+// The full structured shape, with empty extraction lists. Used as the no-key
+// fallback and as the base every AI result is merged onto.
+function emptyStructured() {
+  return {
+    summary: null, current_phase: null, blockers: [],
+    in_progress: [], next_up: [], working_well: [],
+    tags: [], bugs: [], next_steps: [],
+  };
+}
+
 function fallbackSummary(t) {
   const lastAssistant = [...t.turns].reverse().find((x) => x.role === 'assistant');
-  let summary = (lastAssistant?.text || '').replace(/\s+/g, ' ').trim().slice(0, 700);
-  return { summary: summary || null, current_phase: null, next_steps: [], blockers: [] };
+  const summary = (lastAssistant?.text || '').replace(/\s+/g, ' ').trim().slice(0, 700) || null;
+  return { ...emptyStructured(), summary };
 }
 
 function compactTranscript(t) {
@@ -137,18 +153,54 @@ function compactTranscript(t) {
     .join('\n\n');
 }
 
+const strList = (v, max = 5) =>
+  Array.isArray(v) ? v.map((x) => String(x).trim()).filter(Boolean).slice(0, max) : [];
+const oneOf = (v, allowed, fallback) => (allowed.includes(v) ? v : fallback);
+
+// Normalise whatever the model returned onto the strict structured shape.
+function sanitiseStructured(parsed) {
+  const out = emptyStructured();
+  out.summary = parsed.summary ? String(parsed.summary) : null;
+  out.current_phase = parsed.current_phase ? String(parsed.current_phase) : null;
+  out.blockers = strList(parsed.blockers);
+  out.in_progress = strList(parsed.in_progress);
+  out.next_up = strList(parsed.next_up);
+  out.working_well = strList(parsed.working_well);
+  out.tags = strList(parsed.tags, 4).map((s) => s.toLowerCase());
+  out.bugs = Array.isArray(parsed.bugs)
+    ? parsed.bugs
+        .map((b) => ({ title: String(b?.title || '').trim(), severity: oneOf(b?.severity, SEVERITIES, 'medium') }))
+        .filter((b) => b.title)
+        .slice(0, 10)
+    : [];
+  out.next_steps = Array.isArray(parsed.next_steps)
+    ? parsed.next_steps
+        .map((s) => ({ title: String(s?.title || '').trim(), priority: oneOf(s?.priority, BUCKETS, 'should') }))
+        .filter((s) => s.title)
+        .slice(0, 10)
+    : [];
+  return out;
+}
+
 async function aiSummary(t, project) {
   const key = process.env.ANTHROPIC_API_KEY;
   if (!key) return fallbackSummary(t);
 
   const system =
-    'You summarise a coding session so the developer can resume later with zero re-reading. ' +
-    'Return ONLY a JSON object, no prose, no markdown fences, with keys: ' +
+    'You summarise a coding session so the developer can resume later with zero re-reading, ' +
+    'and you triage what changed. Return ONLY a JSON object, no prose, no markdown fences, with keys: ' +
     '"summary" (2-4 sentences, plain en-AU, what was actually done and the current state), ' +
     '"current_phase" (short label, <8 words, or null), ' +
-    '"next_steps" (array of <=5 short imperative strings, or []), ' +
-    '"blockers" (array of short strings for anything unresolved/broken, or []). ' +
-    'Be concrete and specific to this session. Do not invent next steps that were not implied.';
+    '"in_progress" (array of <=5 short strings — things mid-flight right now, or []), ' +
+    '"next_up" (array of <=5 short imperative strings — the suggested next moves, or []), ' +
+    '"working_well" (array of <=5 short strings — things to keep/that are paying off, or []), ' +
+    '"blockers" (array of short strings for anything unresolved/broken, or []), ' +
+    '"tags" (array of up to 4 short lowercase labels for the push, e.g. "backend", "in progress"), ' +
+    '"bugs" (array of {title, severity} for bugs introduced or found this session; ' +
+    'severity is one of critical|high|medium|low; [] if none), ' +
+    '"next_steps" (array of {title, priority} concrete follow-up tasks; ' +
+    'priority is one of must|should|could|wont, default should; [] if none). ' +
+    'Be concrete and specific to this session. Do not invent bugs or next steps that were not implied.';
 
   const user =
     `Project: ${project.name}${project.repo ? ` (${project.repo})` : ''}\n` +
@@ -166,7 +218,7 @@ async function aiSummary(t, project) {
       },
       body: JSON.stringify({
         model: MODEL,
-        max_tokens: 700,
+        max_tokens: 1024,
         system,
         messages: [{ role: 'user', content: user }],
       }),
@@ -175,13 +227,7 @@ async function aiSummary(t, project) {
     const data = await res.json();
     const text = (data.content || []).filter((b) => b.type === 'text').map((b) => b.text).join('\n').trim();
     const clean = text.replace(/^```(?:json)?/i, '').replace(/```$/, '').trim();
-    const parsed = JSON.parse(clean);
-    return {
-      summary: parsed.summary ? String(parsed.summary) : null,
-      current_phase: parsed.current_phase ? String(parsed.current_phase) : null,
-      next_steps: Array.isArray(parsed.next_steps) ? parsed.next_steps.map(String) : [],
-      blockers: Array.isArray(parsed.blockers) ? parsed.blockers.map(String) : [],
-    };
+    return sanitiseStructured(JSON.parse(clean));
   } catch (e) {
     log(`summary failed (${e.message}); using fallback`);
     return fallbackSummary(t);
@@ -203,8 +249,10 @@ async function aiSummary(t, project) {
   const cwd = DEMO ? process.cwd() : (payload.cwd || process.cwd());
   const project = projectFromGit(cwd);
 
+  // The session checkpoint (resume state) and the extraction package.
   let session = {
     session_id: payload.session_id || null,
+    commit_hash: project.commit,
     reason: payload.reason || (DEMO ? 'demo' : 'exit'),
     cwd,
     branch: project.branch,
@@ -213,22 +261,40 @@ async function aiSummary(t, project) {
     current_phase: null,
     next_steps: [],
     blockers: [],
+    in_progress: [],
+    next_up: [],
+    working_well: [],
+    tags: [],
     files_touched: [],
     tools_used: [],
     message_count: 0,
   };
+  let extract = { bugs: [], next_steps: [] };
 
   if (DEMO) {
     session = {
       ...session,
       model: MODEL,
-      summary: 'Demo stack. Wired the SessionEnd hook to the Stack API and confirmed end-to-end ingest works.',
-      current_phase: 'Hook integration',
-      next_steps: ['Add STACK_API + STACK_TOKEN to the real environment', 'End a real session to capture an auto summary'],
+      summary:
+        'Moved Stack off localStorage onto the Postgres-backed API and wired the post-push ingest ' +
+        'loop so a push auto-extracts bugs and next-steps. Confirmed the demo checkpoint lands end to end.',
+      current_phase: 'Persistence cutover',
+      in_progress: ['Wiring store.ts to the live API', 'Token gate first-load screen'],
+      next_up: ['Ship the API token gate', 'Document the ingest package shape'],
+      working_well: ['One-module persistence boundary held up', 'Idempotent migrations on boot'],
+      tags: ['backend', 'in progress'],
+      next_steps: ['Ship the API token gate', 'Document the ingest package shape'],
       blockers: [],
-      files_touched: ['.claude/settings.json'],
-      tools_used: ['Write', 'Bash'],
-      message_count: 8,
+      files_touched: ['web/src/store.ts', 'server/src/routes/ingest.js'],
+      tools_used: ['Write', 'Edit', 'Bash'],
+      message_count: 12,
+    };
+    extract = {
+      bugs: [{ title: 'Resume card mis-positions on mobile', severity: 'medium' }],
+      next_steps: [
+        { title: 'Ship the API token gate', priority: 'must' },
+        { title: 'Document the ingest package shape', priority: 'should' },
+      ],
     };
   } else {
     const t = parseTranscript(payload.transcript_path);
@@ -239,20 +305,26 @@ async function aiSummary(t, project) {
         model: t.model,
         summary: s.summary,
         current_phase: s.current_phase,
-        next_steps: s.next_steps,
+        next_steps: s.next_up,           // legacy column mirrors the resume "next up"
         blockers: s.blockers,
+        in_progress: s.in_progress,
+        next_up: s.next_up,
+        working_well: s.working_well,
+        tags: s.tags,
         files_touched: t.files,
         tools_used: t.tools,
         message_count: t.messageCount,
       };
+      extract = { bugs: s.bugs, next_steps: s.next_steps };
     }
-    // If transcript is missing/too short, we still POST a thin stack so
+    // If transcript is missing/too short, we still POST a thin package so
     // "last touched" updates; the server keeps the previous richer summary.
   }
 
   const body = {
     project: { slug: project.slug, name: project.name, repo: project.repo },
     session,
+    extract,
   };
 
   try {
@@ -262,7 +334,7 @@ async function aiSummary(t, project) {
       body: JSON.stringify(body),
     });
     if (!res.ok) die0(`ingest returned ${res.status}`);
-    log(`stack saved for ${project.slug}`);
+    log(`stack saved for ${project.slug}${project.commit ? ` @ ${project.commit}` : ''}`);
   } catch (e) {
     die0(`could not reach ${api}: ${e.message}`);
   }

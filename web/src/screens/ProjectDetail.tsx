@@ -1,7 +1,9 @@
-import { useMemo, useState } from 'react';
-import type { Bug, Roadmap as RoadmapData, Note, Severity, Priority, Project } from '../types';
-import { getProject, getActivity, getBugs, setBugs, getRoadmap, setRoadmap, getNotes, setNotes } from '../store';
-import { NOTE_PALETTE } from '../seed';
+import { useEffect, useState, type ReactNode } from 'react';
+import type { Roadmap as RoadmapData, RoadmapItem, Severity, Priority } from '../types';
+import {
+  getProjectDetail, type ProjectDetailData,
+  createBug, createRoadmapItem, patchRoadmapItem, createNote, deleteNote,
+} from '../store';
 import { go } from '../lib/route';
 import { Overview } from '../detail/Overview';
 import { Bugs } from '../detail/Bugs';
@@ -17,62 +19,115 @@ const TABS: { key: Tab; label: string }[] = [
   { key: 'overview', label: 'Overview' }, { key: 'bugs', label: 'Bugs' },
   { key: 'roadmap', label: 'Roadmap' }, { key: 'notes', label: 'Notes' }, { key: 'activity', label: 'Activity' },
 ];
-const STATUS_LABEL = { live: 'Live', building: 'Building', paused: 'Paused' } as const;
+const STATUS_LABEL = { live: 'Live', building: 'Building', paused: 'Paused', archived: 'Archived' } as const;
+
+const roadmapTotal = (r: RoadmapData) => r.must.length + r.should.length + r.could.length + r.wont.length;
 
 export function ProjectDetail({ id }: { id: string }) {
-  const project = getProject(id);
-  if (!project) return <NotFound />;
+  const [data, setData] = useState<ProjectDetailData | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState('');
 
-  return <Detail project={project} />;
+  useEffect(() => {
+    let live = true;
+    setLoading(true);
+    getProjectDetail(id)
+      .then((d) => { if (live) { setData(d); setLoadError(''); } })
+      .catch((e) => { if (live) setLoadError(e?.message || 'Failed to load.'); })
+      .finally(() => { if (live) setLoading(false); });
+    return () => { live = false; };
+  }, [id]);
+
+  if (loading) return <Shell><div className="empty-state"><div className="big">Loading…</div></div></Shell>;
+  if (loadError || !data) {
+    return (
+      <Shell>
+        <div className="empty-state">
+          <div className="big">{loadError === 'No such project.' ? 'Project not found' : "Couldn't load this project"}</div>
+          <div style={{ marginBottom: 16 }}>{loadError || 'It may have been removed.'}</div>
+          <button className="btn-accent" onClick={go.dashboard} style={{ display: 'inline-flex' }}>Back to projects</button>
+        </div>
+      </Shell>
+    );
+  }
+  return <Detail data={data} setData={setData} />;
 }
 
-function Detail({ project }: { project: Project }) {
-  const id = project.id;
+function Shell({ children }: { children: ReactNode }) {
+  return (
+    <div>
+      <div className="topbar">
+        <div className="crumb">
+          <span className="chev" onClick={go.dashboard}>‹</span>
+          <span className="back" onClick={go.dashboard}>Projects</span>
+        </div>
+      </div>
+      <div className="page detail" style={{ paddingTop: 40 }}>{children}</div>
+    </div>
+  );
+}
+
+function Detail({ data, setData }: { data: ProjectDetailData; setData: (d: ProjectDetailData) => void }) {
+  const { project, activity } = data;
+  const slug = project.id;
+
   const [tab, setTab] = useState<Tab>('overview');
   const [bugFilter, setBugFilter] = useState<BugFilter>('all');
   const [highlightRef, setHighlightRef] = useState<string | null>(null);
-
-  const [bugs, setBugsState] = useState<Bug[]>(() => getBugs(id));
-  const [roadmap, setRoadmapState] = useState<RoadmapData>(() => getRoadmap(id));
-  const [notes, setNotesState] = useState<Note[]>(() => getNotes(id));
-  const activity = useMemo(() => getActivity(id), [id]);
-
   const [bugModal, setBugModal] = useState(false);
   const [roadModal, setRoadModal] = useState<{ open: boolean; priority: Priority }>({ open: false, priority: 'should' });
+  const [actionError, setActionError] = useState('');
+
+  const bugs = data.bugs;
+  const roadmap = data.roadmap;
+  const notes = data.notes;
 
   const openBugCount = bugs.filter((b) => b.status !== 'fixed').length;
   const fixingCount = bugs.filter((b) => b.status === 'fixing').length;
-  const roadmapCount = roadmap.must.length + roadmap.should.length + roadmap.could.length + roadmap.wont.length;
+  const roadmapCount = roadmapTotal(roadmap);
   const linkedBugId = bugs.find((b) => b.linkRef === highlightRef)?.id ?? null;
 
-  // ---- mutations ----
-  const addBug = ({ title, severity }: { title: string; severity: Severity }) => {
-    const nums = bugs.map((b) => parseInt(b.id.split('-')[1] || '0', 10) || 0);
-    const nb: Bug = { id: `BUG-${Math.max(0, ...nums) + 1}`, title: title.trim(), severity, status: 'open', meta: 'reported just now', linkRef: null };
-    const next = [nb, ...bugs];
-    setBugsState(next); setBugs(id, next);
-    setBugModal(false); setBugFilter('all');
+  const guard = async (fn: () => Promise<void>) => {
+    try { setActionError(''); await fn(); }
+    catch (e) { setActionError((e as Error)?.message || 'Something went wrong.'); }
   };
 
-  const addRoad = ({ title, note, priority }: { title: string; note: string; priority: Priority }) => {
-    const next: RoadmapData = { ...roadmap, [priority]: [...roadmap[priority], { title: title.trim(), note: note.trim() }] };
-    setRoadmapState(next); setRoadmap(id, next);
-    setRoadModal({ open: false, priority });
-  };
+  // ---- mutations (each persists, then patches the loaded data in place) ----
+  const addBug = ({ title, severity }: { title: string; severity: Severity }) =>
+    guard(async () => {
+      const bug = await createBug(slug, { title, severity });
+      setData({ ...data, bugs: [bug, ...bugs] });
+      setBugModal(false); setBugFilter('all');
+    });
 
-  const addNote = (text: string) => {
-    const color = NOTE_PALETTE[notes.length % NOTE_PALETTE.length];
-    const next: Note[] = [{ id: 'n' + Date.now(), text, color, when: 'just now' }, ...notes];
-    setNotesState(next); setNotes(id, next);
-  };
-  const deleteNote = (nid: string) => {
-    const next = notes.filter((n) => n.id !== nid);
-    setNotesState(next); setNotes(id, next);
-  };
+  const addRoad = ({ title, note, priority }: { title: string; note: string; priority: Priority }) =>
+    guard(async () => {
+      const item = await createRoadmapItem(slug, { title, note, bucket: priority });
+      setData({ ...data, roadmap: { ...roadmap, [priority]: [...roadmap[priority], item] } });
+      setRoadModal({ open: false, priority });
+    });
+
+  const toggleRoad = (item: RoadmapItem) =>
+    guard(async () => {
+      const updated = await patchRoadmapItem(slug, item.id, { done: !item.done });
+      const bucket = roadmap[item.bucket].map((it) => (it.id === item.id ? updated : it));
+      setData({ ...data, roadmap: { ...roadmap, [item.bucket]: bucket } });
+    });
+
+  const addNote = (text: string) =>
+    guard(async () => {
+      const note = await createNote(slug, { text });
+      setData({ ...data, notes: [note, ...notes] });
+    });
+
+  const removeNote = (nid: number) =>
+    guard(async () => {
+      await deleteNote(slug, nid);
+      setData({ ...data, notes: notes.filter((n) => n.id !== nid) });
+    });
 
   const openBugLink = (hash: string) => { setHighlightRef(hash); setTab('activity'); };
   const viewAll = () => { setHighlightRef(null); setTab('activity'); };
-
   const open = (url: string) => { if (url) window.open(url, '_blank', 'noopener'); };
 
   return (
@@ -105,6 +160,8 @@ function Detail({ project }: { project: Project }) {
           </div>
         </div>
 
+        {actionError && <div className="action-error">{actionError}</div>}
+
         <div className="tabs">
           {TABS.map((t) => (
             <button key={t.key} className={`tab ${tab === t.key ? 'on' : ''}`} onClick={() => setTab(t.key)}>{t.label}</button>
@@ -120,10 +177,10 @@ function Detail({ project }: { project: Project }) {
             onReport={() => setBugModal(true)} onOpenLink={openBugLink} />
         )}
         {tab === 'roadmap' && (
-          <Roadmap roadmap={roadmap} onAdd={(p) => setRoadModal({ open: true, priority: p })} />
+          <Roadmap roadmap={roadmap} onAdd={(p) => setRoadModal({ open: true, priority: p })} onToggle={toggleRoad} />
         )}
         {tab === 'notes' && (
-          <Notes notes={notes} onAdd={addNote} onDelete={deleteNote} />
+          <Notes notes={notes} onAdd={addNote} onDelete={removeNote} />
         )}
         {tab === 'activity' && (
           <Activity activity={activity} highlightRef={highlightRef} linkedBugId={linkedBugId} onClear={() => setHighlightRef(null)} />
@@ -134,18 +191,6 @@ function Detail({ project }: { project: Project }) {
       {roadModal.open && (
         <RoadmapModal initialPriority={roadModal.priority} onClose={() => setRoadModal({ open: false, priority: roadModal.priority })} onSubmit={addRoad} />
       )}
-    </div>
-  );
-}
-
-function NotFound() {
-  return (
-    <div className="page" style={{ paddingTop: 80 }}>
-      <div className="empty-state">
-        <div className="big">Project not found</div>
-        <div style={{ marginBottom: 16 }}>It may have been removed.</div>
-        <button className="btn-accent" onClick={go.dashboard} style={{ display: 'inline-flex' }}>Back to projects</button>
-      </div>
     </div>
   );
 }
