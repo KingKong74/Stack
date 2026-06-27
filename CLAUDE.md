@@ -12,34 +12,57 @@ from the Atlas design handoff (colours, type, spacing, copy and interactions are
 ## Architecture
 
 ```
-web/    Vite + React 18 + TS (strict). Hash-routed, two screens. Persistence is the Postgres API,
-        reached ONLY through src/store.ts (every function async, bearer-token auth). Token gate on
-        first load; any 401 clears the token and returns to the gate.
+web/    Vite + React 18 + TS (strict). Hash-routed, three screens (dashboard, project detail,
+        settings) + a global ⌘K command palette. Persistence is the Postgres API, reached ONLY
+        through src/store.ts (every function async, bearer-token auth). Token gate on first load;
+        any 401 clears the token and returns to the gate.
 server/ Express + Postgres. Idempotent schema migrate on boot, retries first DB connect (survives
         compose start order). Bearer-token auth on every route except GET /api/health; fails closed
         if API_TOKEN is unset.
-hook/   Two zero-dependency Node ESM hooks; both always exit 0 and never print the token.
-        SessionEnd reads hook JSON on stdin, captures the commit, parses the transcript, optional
-        Anthropic summary + extraction, POSTs to /api/ingest. SessionStart derives the project, GETs
-        /api/projects/:slug and injects a "where you left off" block via additionalContext (emits
-        nothing if the project is untracked or the API is unreachable).
+hook/   Zero-dependency Node ESM. stack-post.mjs is the shared lib (env load, git derivation,
+        settings fetch, POST to /api/ingest) imported by both:
+        • stack-session-end.mjs — the SessionEnd hook. A pure METADATA backstop: parses the
+          transcript for commit/branch/files/tools/message-count + the last substantive message and
+          POSTs that (authored:false). Calls NO external API. Always exits 0. Honours auto_record /
+          include_chores. Idempotent + COALESCE-safe (never clobbers an authored checkpoint).
+        • stack-session-start.mjs — the SessionStart hook. GETs /api/projects/:slug and injects a
+          "where you left off" block via additionalContext (nothing if untracked/unreachable); nudges
+          /checkpoint when wrapping up.
+        • stack-checkpoint.mjs — the /checkpoint POSTER (not a hook). Reads a checkpoint JSON on
+          stdin and POSTs it (authored:true); `--settings` prints current settings. Installs to
+          ~/.stack/ alongside the hooks + stack-post.mjs.
 templates/  stack-agent-context.md — the canonical portable agent manual (single source of truth).
 scripts/    stack-context.mjs — prints that template to stdout, optionally stamped with slug + API.
+.claude/commands/checkpoint.md — the /checkpoint slash command (documented for install to
+            ~/.claude/commands/). Tells the session to author the full checkpoint schema and pipe it
+            to ~/.stack/stack-checkpoint.mjs (token read from ~/.stack/env, never printed).
 ```
 
 ### Frontend structure (`web/src`)
 - `store.ts` — **the only module that touches the network.** Auth helpers (`getToken/setToken/
   clearToken/onAuthChange/verifyToken`) + async data calls: `getOverview` (the command deck),
-  `getProjects`, `getProjectDetail`,
+  `getSearch` (the ⌘K palette), `getSettings/patchSettings`, `getProjects`, `getProjectDetail`,
   `createProject/patchProject/deleteProject`, `getBugs/createBug/patchBug/deleteBug`,
   `getRoadmap/createRoadmapItem/patchRoadmapItem/deleteRoadmapItem`,
   `getNotes/createNote/patchNote/deleteNote`. `request()` attaches the bearer and throws `AuthError`
   on 401 (which clears the token).
+- `components/CommandPalette.tsx` — the global ⌘K palette. Centred modal over a dimmed/blurred
+  backdrop: debounced query, scope chips (All/Bugs/Roadmap/Notes/Activity with counts), grouped
+  results with kind icons, the matched term marked in terracotta, full keyboard control (⌘K toggles,
+  ↑↓ across groups, ↵ opens → `go.detail(slug, tab, highlight)`, esc closes), focus trap + restore,
+  reduced-motion respected. Opened from the dashboard/detail search box or ⌘K anywhere (state lives
+  in `App.tsx`).
+- `screens/Settings.tsx` — the Settings screen (reached from the avatar / `#/settings`). Two
+  sections only: **Push summaries** (the cream card — switches + Brief/Standard/Detailed segmented
+  control, optimistic with rollback) and **Access** (masked token, Test connection, Sign out). Uses
+  `getSettings/patchSettings`; a 401 anywhere returns to the gate.
 - `types.ts` — Project, Bug, RoadmapItem, Note, Activity, Resume. Status is `live | building |
   paused | archived`. Bug/RoadmapItem/Note carry `source: 'hook' | 'manual'` (drives the "auto" cue).
 - `components/TokenGate.tsx` — first-load token screen; `App.tsx` shows it whenever there's no token.
-- `lib/ui.ts` — `PRODUCT_NAME`, label/colour maps, `isAccentTag`. `lib/route.ts` — hash router; the
-  detail route is `#/p/<slug>[/<tab>]`, so `go.detail(slug, 'activity')` opens straight on a tab.
+- `lib/ui.ts` — `PRODUCT_NAME`, label/colour maps, `isAccentTag`. `lib/route.ts` — hash router; routes
+  are `#/`, `#/settings`, and `#/p/<slug>[/<tab>][?hl=<x>]`. `go.detail(slug, tab, highlight)` opens
+  straight on a tab and (via `hl`) flags an item — the tab disambiguates what `hl` means: a commit
+  hash (activity), a bug key (bugs) or a row id (roadmap/notes). `go.settings()` opens Settings.
 - `components/CommandDeck.tsx` — the cross-project deck at the top of the dashboard (resume hero,
   Blocked/Stale/Bugs attention row that goes calm at zero, merged activity stream). Renders the
   `getOverview()` payload; all click-throughs use `go.detail(slug, tab?)`.
@@ -53,9 +76,13 @@ scripts/    stack-context.mjs — prints that template to stdout, optionally sta
   unset via `patchProject`), and a quiet delete-project control behind a `ConfirmModal`.
 - `components/` — `Modal`, `ConfirmModal` (delete / keep-or-delete), `BugModal`/`RoadmapModal`
   (both take an optional `initialTitle` for note promotion), `NewProjectModal`, `TokenGate`.
-- `styles.css` — design tokens + component classes. Roadmap done/auto cues, token gate, note
-  edit/promote, the confirm/danger controls and the status/severity/priority colour variants live
-  near the bottom.
+- `styles.css` — **the formal palette is the named CSS variables at the top of `:root`** (Atlas):
+  neutrals (`--paper --surface --sand --keyline --muted --ink`), the terracotta accent ramp
+  (`--accent-deep` hover · `--accent` · `--accent-soft` · `--accent-tint` · `--accent-tint-border`)
+  and semantic tones (`--live --building --sage --critical --paused`). Every terracotta button hovers
+  to `--accent-deep`. Supporting tokens below alias these (no value changes). Command palette
+  (`.cmdk-*`), Settings (`.set-*`, `.switch`, `.seg-control`) and the search deep-link `.hl` rows
+  live near the bottom, after the command-deck block.
 
 ### Backend shape (`server/src`)
 - `schema.sql` — idempotent (ADD COLUMN IF NOT EXISTS + convergent data migrations). Tables:
@@ -63,7 +90,10 @@ scripts/    stack-context.mjs — prints that template to stdout, optionally sta
     jsonb fields are the resume sub-lists). Status default `building`; legacy `active` rows migrate
     to `live`. `repo` is the `owner/repo` identity; `repo_url` is the browseable URL the Repo button
     opens (filled once by ingest, never overwriting a hand-set value).
-  - `sessions` — the activity feed. + `commit_hash`, `tags` jsonb.
+  - `sessions` — the activity feed. + `commit_hash`, `tags` jsonb, `authored` bool (a rich
+    /checkpoint vs the hook's metadata backstop; sticky — once true it stays true).
+  - `settings` — single row (boolean PK = true, CHECK singleton). `auto_record`, `keep_resume_card`,
+    `checkpoint_detail` (brief|standard|detailed), `include_chores`. Seeded once on migrate.
   - `bugs` — `bug_key` (BUG-N per project), title, severity, status, `link_ref` (commit), `source`,
     `fingerprint`. Partial unique index on (project, fingerprint) WHERE source='hook'.
   - `roadmap_items` — `bucket`, title, note, `done`, `position`, `source`, `fingerprint`.
@@ -73,17 +103,25 @@ scripts/    stack-context.mjs — prints that template to stdout, optionally sta
   whitespace stripped), `relativeTime`, palettes, **`computeProgress` — the one documented progress
   model** (see below), and **`STALE_DAYS`** — the single knob for the command deck's stale threshold
   (default 14; the only place to change it).
-- `shape.js` — row → client-shape mappers (bug/roadmap/note/activity/project).
+- `shape.js` — row → client-shape mappers (bug/roadmap/note/activity/project). The detail shape also
+  carries `keepResumeCard` (the global flag) so the detail Overview hides its resume card cleanly.
+- `settings.js` — the single-row settings: `readSettings(client?)` (accepts a txn client; defaults on
+  failure) and `settingsShape` (row → client camelCase). Imported by ingest/overview/projects.
 - `routes/ingest.js` — `POST /api/ingest`: see the package + behaviour below.
 - `routes/overview.js` — `GET /api/overview`: the cross-project command deck, computed in four
-  aggregate queries (projects, bugs agg, recent sessions, week count) — never one-per-project. Shape
-  documented below.
+  aggregate queries (projects, bugs agg, recent sessions, week count) — never one-per-project. Reads
+  settings: when `keep_resume_card` is off, `resume` is null and `keepResumeCard:false` lets the deck
+  drop the hero. Shape documented below.
+- `routes/search.js` — `GET /api/search?q=…`: the ⌘K palette. Five capped ILIKE queries (projects,
+  bugs, roadmap, notes, activity); grouped results, each with kind, owning project, title, meta and a
+  `{slug, tab, highlight}` target. Per-group + total caps; empty query → nothing. Shape below.
+- `routes/settings.js` — `GET|PATCH /api/settings`: the single-row settings (camelCase). Shape below.
 - `routes/projects.js` — list (computed progress), combined detail, create, extended PATCH, delete.
 - `routes/{bugs,roadmap,notes}.js` — per-project collection CRUD, mounted under
   `/api/projects/:slug/...` (mergeParams).
 - `seed.js` — optional `npm run seed`, NOT run on boot.
 
-## The ingest package (what the hook sends)
+## The ingest package (what /checkpoint and the hook send)
 
 ```jsonc
 {
@@ -92,6 +130,7 @@ scripts/    stack-context.mjs — prints that template to stdout, optionally sta
   "session": {
     "session_id": "…", "commit_hash": "6234a79", "branch": "main",
     "cwd": "…", "model": "…", "reason": "exit", "message_count": 12,
+    "authored": true,                  // true = rich /checkpoint; false = the hook's metadata backstop
     "summary": "…", "current_phase": "…",
     "next_steps": ["…"], "blockers": ["…"],
     "in_progress": ["…"], "next_up": ["…"], "working_well": ["…"],
@@ -107,12 +146,20 @@ scripts/    stack-context.mjs — prints that template to stdout, optionally sta
 
 Ingest, in one transaction: upsert the project by slug (first push creates it + assigns a tint by
 cycling the palette, and fills `repo_url` once — `COALESCE(repo_url, …)` so a hand-set URL is never
-overwritten); record the session, **idempotent on commit_hash / session_id** (re-running the
-hook for the same push updates that row, never duplicates the activity); refresh the live resume
-fields with COALESCE / keep-if-empty; then land extraction — each bug becomes an open bug with
-`link_ref` = the commit (so the bug→activity chip resolves), each next-step a roadmap item in its
-bucket (default `should`). Dedup by fingerprint: an existing auto item is re-pointed at the commit,
-not duplicated; a fingerprint in `dismissed_items` is skipped; manual items are never touched.
+overwritten); record the session, **idempotent on commit_hash / session_id** (re-running for the same
+push updates that row, never duplicates the activity); refresh the live resume fields; then land
+extraction — each bug becomes an open bug with `link_ref` = the commit (so the bug→activity chip
+resolves), each next-step a roadmap item in its bucket (default `should`). Dedup by fingerprint: an
+existing auto item is re-pointed at the commit, not duplicated; a fingerprint in `dismissed_items` is
+skipped; manual items are never touched.
+
+**`authored` is what makes the metadata backstop safe.** A `/checkpoint` posts `authored:true` (rich);
+the SessionEnd hook posts `authored:false` (metadata). The session-row update is COALESCE-safe: a
+metadata post never overwrites an existing authored summary/current_phase, and the jsonb lists only
+overwrite when non-empty — so the activity feed always has content but a thin post can't blank a rich
+one. `authored` is sticky (`authored OR $incoming`). The project **resume refresh (step 3) runs only
+for `authored:true` posts** (and only when `keep_resume_card` is on) — the metadata hook never touches
+the resume card; it just records the activity row and bumps `last_session_at`.
 
 ## Progress model (`util.computeProgress`)
 
@@ -131,6 +178,7 @@ The cross-project glance layer, computed server-side in four aggregate queries (
                "summary": "…", "currentPhase": "…", "nextUp": ["…"] },   // or null
   // resume = most-recently-touched live|building project (by last_session_at, not pin order),
   //          falling back to the most-recently-touched of any status; null if there are no projects.
+  "keepResumeCard": true,   // false when keep_resume_card is off → the deck drops the hero entirely
   "blockers": [ { "slug": "…", "name": "…", "text": "…" } ],            // every stored blocker line, flat
   "stale":    [ { "slug": "…", "name": "…", "since": "2w ago" } ],      // live|building, last push > STALE_DAYS
   "bugs":     { "total": 3, "projects": [ { "slug": "…", "name": "…", "count": 2 } ] }, // open critical|high
@@ -145,12 +193,72 @@ The cross-project glance layer, computed server-side in four aggregate queries (
 threshold is the single constant `util.STALE_DAYS` (default 14). The deck loads independently of the
 project grid on the dashboard, so an overview hiccup never blanks the grid.
 
+## The search payload (`GET /api/search?q=…` → the ⌘K palette)
+
+Five capped, case-insensitive ILIKE queries (project name/subtitle, bug title, roadmap title/note,
+note text, session summary). Results grouped by kind; each result carries its owning project and a
+navigation target. An empty query returns empty groups.
+
+```jsonc
+{
+  "query": "fog",
+  "groups": {
+    // kind ∈ project|bug|roadmap|note|activity; meta = status (bug) / priority (roadmap) / relative time (note,activity)
+    "projects": [ { "kind": "project", "slug": "…", "name": "…", "tint": "#…|null",
+                    "title": "…", "meta": "…",
+                    "target": { "slug": "…", "tab": "overview", "highlight": null } } ],
+    "bugs":     [ { …, "target": { "slug": "…", "tab": "bugs",     "highlight": "BUG-3" } } ],
+    "roadmap":  [ { …, "target": { "slug": "…", "tab": "roadmap",  "highlight": "42" } } ],
+    "notes":    [ { …, "target": { "slug": "…", "tab": "notes",    "highlight": "7" } } ],
+    "activity": [ { …, "target": { "slug": "…", "tab": "activity", "highlight": "6234a79" } } ]
+  },
+  "counts": { "projects": 0, "bugs": 1, "roadmap": 1, "notes": 1, "activity": 1, "total": 4 },
+  "projectCount": 2          // distinct projects across all results → "N results across M projects"
+}
+```
+
+Caps: `PER_GROUP` (6) + `TOTAL_CAP` (24, trimming the largest groups first). `highlight` is consumed
+by `go.detail(slug, tab, highlight)` → the tab decides what it means (commit / bug key / row id) and
+the existing `.hl` ring flags the row.
+
+## The settings payload (`GET|PATCH /api/settings`)
+
+Single row, client camelCase. Meanings under the no-API model:
+
+```jsonc
+{
+  "autoRecord": true,         // does the SessionEnd hook post its metadata backstop
+  "keepResumeCard": true,     // does ingest refresh resume fields + does the deck/Overview show the card
+  "checkpointDetail": "standard", // brief|standard|detailed — read by /checkpoint to shape the summary
+  "includeChores": false      // do chore-only sessions get a checkpoint (hook + /checkpoint guidance)
+}
+```
+
+PATCH accepts any subset; unknown keys ignored, `checkpointDetail` coerced to the allowed set. The
+hook and the /checkpoint poster read these (bounded, **default-on if the API is unreachable**, never
+blocking). `keep_resume_card` off → ingest still inserts the activity row but doesn't touch resume
+fields, the overview drops the hero, and the detail Overview hides its resume card.
+
+## The /checkpoint command + poster
+
+Rich resume content is **Claude-authored, free, no external API**. `.claude/commands/checkpoint.md`
+(install to `~/.claude/commands/`) tells the session to: read settings via
+`stack-checkpoint.mjs --settings` (honour `checkpointDetail` + `includeChores`), derive the slug from
+the git remote, compose the full schema (summary, current_phase, in_progress, next_up, working_well,
+blockers, tags, plus `extract.bugs` + `extract.next_steps`), and pipe that JSON to
+`~/.stack/stack-checkpoint.mjs`. The poster sets `authored:true`, fills commit/branch from git, reads
+the token from `~/.stack/env` (**never printed**) and POSTs to `/api/ingest`. The SessionEnd hook is
+the silent metadata backstop so the feed never has gaps.
+
 ## Routes (all behind bearer auth except GET /api/health)
 
 - `POST /api/ingest` (also the source the SessionStart hook reads back via `GET /api/projects/:slug`)
 - `GET /api/overview` (cross-project command deck — resume, blockers, stale, bugs, activity, totals)
+- `GET /api/search?q=…` (the ⌘K palette — grouped results across all kinds; see shape below)
+- `GET|PATCH /api/settings` (single-row app settings; see shape below)
 - `GET /api/projects` · `POST /api/projects` · `GET /api/projects/:slug` (project + activity +
-  collections + progress; the detail payload includes `blockers` for the start hook) ·
+  collections + progress; the detail payload includes `blockers` for the start hook and
+  `keepResumeCard`) ·
   `PATCH /api/projects/:slug` (subtitle, site_url, repo_url, status, pin, …) ·
   `DELETE /api/projects/:slug` (cascades sessions/bugs/roadmap/notes via FK `ON DELETE CASCADE`)
 - `GET|POST /api/projects/:slug/bugs` · `PATCH|DELETE /api/projects/:slug/bugs/:bugKey`
@@ -168,7 +276,13 @@ re-create it.
   runtime. The hooks never read tokens from the shell profile or settings.json, and never print them.
 - Frontend is **strict TS** with `noUnusedLocals`/`noUnusedParameters` on — keep it clean.
 - All persistence/network stays behind `store.ts`. Components never `fetch` or touch storage directly.
-- Both hooks must **always exit 0** and log only to stderr — never block Claude Code start or stop.
+- Both **hooks** must **always exit 0** and log only to stderr — never block Claude Code start or stop.
+  (The `stack-checkpoint.mjs` poster is not a hook — it may exit non-zero so /checkpoint can report a
+  failure — but it still never prints the token.) Shared logic lives in `hook/stack-post.mjs`.
+- **No external AI API.** Rich summaries are authored by Claude via `/checkpoint`; the SessionEnd hook
+  only records metadata. Keep it that way — don't reintroduce an API-key summary path.
+- Colour is the named CSS variables at the top of `styles.css` `:root` — add/adjust tones there, not
+  as inline hexes; terracotta buttons hover to `--accent-deep`.
 - `templates/stack-agent-context.md` is the single source of truth for the portable agent manual; if
   the API or hook contract changes, update it (it's exported verbatim by `scripts/stack-context.mjs`).
 
@@ -176,9 +290,12 @@ re-create it.
 
 - `server` retries the first Postgres connection — don't "fix" that; it's what survives compose order.
 - Ingest uses COALESCE / keep-if-empty on update so short/empty checkpoints don't overwrite a good
-  summary. Preserve that property when extending.
+  summary, and the `authored` flag means a metadata backstop never clobbers a rich /checkpoint for the
+  same commit. Preserve both properties when extending.
 - Ingest is idempotent on commit_hash / session_id; auto-extraction dedups on fingerprint and honours
   the tombstone table. Keep all three when touching ingest.
+- `readSettings()` defaults to "on" when the row is missing, and the hook/poster default to "on" when
+  the API is unreachable — so a flaky API degrades to recording, never to silent-off. Keep that.
 - The web Dockerfile is multi-stage (Vite build → nginx). nginx does SPA fallback **and** proxies
   `/api` to `server:4000` on the compose network. In local `npm run dev`, Vite proxies `/api` to
   `localhost:4000` instead (see `vite.config.ts`).
@@ -194,7 +311,9 @@ cd web && npm install && npm run dev     # frontend on :5173 (needs the server r
 cd web && npm run build                  # strict typecheck + production bundle
 docker compose up -d --build             # full stack
 docker compose exec server npm run seed  # optional demo projects (off by default)
-node hook/stack-session-end.mjs --demo     # fire a synthetic checkpoint + extraction
+node hook/stack-session-end.mjs --demo     # fire the metadata backstop (no external API)
 node hook/stack-session-start.mjs --demo   # print the "where you left off" block for this repo
+node hook/stack-checkpoint.mjs --settings  # print current settings (what /checkpoint reads)
+echo '{"project":{"slug":"stack"},"session":{"summary":"…"}}' | node hook/stack-checkpoint.mjs  # author a checkpoint
 node scripts/stack-context.mjs --slug stack --api https://stack.your-domain  # export agent manual
 ```

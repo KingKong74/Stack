@@ -79,10 +79,11 @@ export function projectListShape(p, { progress, metaLine, pushesThisWeek }) {
   };
 }
 
-export function projectDetailShape(p, { progress, metaLine, pushesThisWeek, activity, bugs, roadmap, notes }) {
+export function projectDetailShape(p, { progress, metaLine, pushesThisWeek, activity, bugs, roadmap, notes, keepResumeCard }) {
   const latest = activity[0];
   return {
     ...projectListShape(p, { progress, metaLine, pushesThisWeek }),
+    keepResumeCard: keepResumeCard !== false, // global flag; false hides the resume card
     summary: p.summary || '',
     currentPhase: p.current_phase || '',
     inProgress: Array.isArray(p.in_progress) ? p.in_progress : [],

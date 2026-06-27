@@ -1,11 +1,20 @@
 import { useEffect, useState } from 'react';
 
-export type Route = { name: 'dashboard' } | { name: 'detail'; id: string; tab?: string };
+export type Route =
+  | { name: 'dashboard' }
+  | { name: 'settings' }
+  | { name: 'detail'; id: string; tab?: string; highlight?: string };
 
 function parse(): Route {
   const h = window.location.hash.replace(/^#/, '');
-  const m = h.match(/^\/p\/([^/]+)(?:\/([^/]+))?/);
-  if (m) return { name: 'detail', id: decodeURIComponent(m[1]), tab: m[2] };
+  if (h === '/settings' || h.startsWith('/settings')) return { name: 'settings' };
+  const [pathPart, queryPart] = h.split('?');
+  const m = pathPart.match(/^\/p\/([^/]+)(?:\/([^/]+))?/);
+  if (m) {
+    const params = new URLSearchParams(queryPart || '');
+    const hl = params.get('hl');
+    return { name: 'detail', id: decodeURIComponent(m[1]), tab: m[2], highlight: hl ? decodeURIComponent(hl) : undefined };
+  }
   return { name: 'dashboard' };
 }
 
@@ -21,7 +30,12 @@ export function useRoute(): Route {
 
 export const go = {
   dashboard: () => { window.location.hash = '#/'; },
-  detail: (id: string, tab?: string) => {
-    window.location.hash = `#/p/${encodeURIComponent(id)}${tab ? `/${tab}` : ''}`;
+  settings: () => { window.location.hash = '#/settings'; },
+  // tab picks which collection opens; highlight (when given) flags the matching
+  // item/commit on that tab via the existing highlight mechanism. The tab
+  // disambiguates what `highlight` means (commit hash, bug key, or row id).
+  detail: (id: string, tab?: string, highlight?: string) => {
+    const q = highlight ? `?hl=${encodeURIComponent(highlight)}` : '';
+    window.location.hash = `#/p/${encodeURIComponent(id)}${tab ? `/${tab}` : ''}${q}`;
   },
 };

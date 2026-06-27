@@ -17,13 +17,33 @@ Two Claude Code hooks keep Stack in sync with reality:
 - **SessionStart** injects a concise *"where you left off"* block at the top of the
   session — the resume summary, current phase, what's in progress / next up, any
   blockers, the open-bug count and the last few activity entries.
-- **SessionEnd** captures the commit, summarises the session, and posts a
-  checkpoint that refreshes the resume card and auto-extracts candidate bugs and
-  next-steps into the trackers.
+- **SessionEnd** is a metadata backstop only. It captures the commit, branch,
+  files touched, tools used and the last substantive message, and posts that so
+  the activity feed never has gaps. **It calls no external API.** It is
+  COALESCE-safe: a metadata post never overwrites a richer authored checkpoint or
+  the resume card for the same commit.
 
 When a "where you left off" block is present, **trust it** rather than
 reconstructing context by re-reading the whole repo. It reflects the live state
 as of the last push. Only dig deeper when the task needs detail the block omits.
+
+## Checkpoint your work with `/checkpoint`
+
+Rich resume content is **authored by you**, not by an external model — it's free
+and uses no API. When you wrap up meaningful work, run **`/checkpoint`**. It:
+
+- reads the current settings (the `checkpoint_detail` level shapes how much your
+  summary explains; `include_chores` decides whether chore-only sessions count),
+- derives the project slug from the git remote,
+- has you compose the full checkpoint schema — summary, current phase, in-progress,
+  next-up, working-well, blockers, tags, plus candidate bugs and next-steps for
+  auto-extraction — and
+- pipes that JSON to `~/.stack/stack-checkpoint.mjs`, which posts it (reading the
+  token from `~/.stack/env`, never printing it).
+
+Make `/checkpoint` routine when finishing a unit of work. The hook silently
+guarantees the feed is never empty; `/checkpoint` is what makes the resume card
+and trackers rich.
 
 ## Reading a project's live state on demand
 

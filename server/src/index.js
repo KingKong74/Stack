@@ -4,6 +4,8 @@ import { migrate, pool } from './db.js';
 import { requireToken } from './auth.js';
 import { ingest } from './routes/ingest.js';
 import { overview } from './routes/overview.js';
+import { search } from './routes/search.js';
+import { settings } from './routes/settings.js';
 import { projects } from './routes/projects.js';
 import { bugs } from './routes/bugs.js';
 import { roadmap } from './routes/roadmap.js';
@@ -28,6 +30,8 @@ app.get('/api/health', async (_req, res) => {
 // at the more specific paths; the projects router handles the rest.
 app.use('/api/ingest', requireToken, ingest);
 app.use('/api/overview', requireToken, overview);
+app.use('/api/search', requireToken, search);
+app.use('/api/settings', requireToken, settings);
 app.use('/api/projects/:slug/bugs', requireToken, bugs);
 app.use('/api/projects/:slug/roadmap', requireToken, roadmap);
 app.use('/api/projects/:slug/notes', requireToken, notes);

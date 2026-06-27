@@ -11,12 +11,11 @@ const STATUS_LABEL: Record<ProjectStatus, string> = {
   live: 'Live', building: 'Building', paused: 'Paused', archived: 'Archived',
 };
 
-export function Dashboard() {
+export function Dashboard({ onOpenSearch }: { onOpenSearch: () => void }) {
   const [projects, setProjects] = useState<Project[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [filter, setFilter] = useState<Filter>('all');
-  const [query, setQuery] = useState('');
   const [newOpen, setNewOpen] = useState(false);
   const [overview, setOverview] = useState<Overview | null>(null);
   const [deckLoading, setDeckLoading] = useState(true);
@@ -53,12 +52,9 @@ export function Dashboard() {
   }), [projects]);
 
   const visible = useMemo(() => {
-    let list = projects;
-    if (filter !== 'all') list = list.filter((p) => p.status === filter);
-    const q = query.trim().toLowerCase();
-    if (q) list = list.filter((p) => `${p.name} ${p.subtitle}`.toLowerCase().includes(q));
-    return list;
-  }, [projects, filter, query]);
+    if (filter === 'all') return projects;
+    return projects.filter((p) => p.status === filter);
+  }, [projects, filter]);
 
   const chips: { key: Filter; label: string }[] = [
     { key: 'all', label: 'All' }, { key: 'live', label: 'Live' },
@@ -82,12 +78,14 @@ export function Dashboard() {
       <div className="topbar dash">
         <div className="brandmark"><span className="sq" /><span className="word">{PRODUCT_NAME}</span></div>
         <div className="right">
-          <div className="searchbox lg" style={{ width: 230 }}>
+          <button className="searchbox lg as-button" style={{ width: 250 }} onClick={onOpenSearch}
+            aria-label="Search everything (⌘K)">
             <span className="glass" />
-            <input placeholder="Search projects…" value={query} onChange={(e) => setQuery(e.target.value)} />
-          </div>
+            <span style={{ color: 'var(--faint)' }}>Search everything…</span>
+            <span className="kbd-hint">⌘K</span>
+          </button>
           <button className="btn-accent" onClick={() => setNewOpen(true)}>New project</button>
-          <div className="avatar" />
+          <button className="avatar" onClick={go.settings} aria-label="Settings" />
         </div>
       </div>
 

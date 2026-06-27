@@ -1,6 +1,6 @@
 import type {
   Project, Resume, Activity, Bug, Roadmap, RoadmapItem, Note, Overview,
-  ProjectStatus, Priority, Severity, BugStatus,
+  ProjectStatus, Priority, Severity, BugStatus, SearchResponse, Settings,
 } from './types';
 
 // ---------------------------------------------------------------------------
@@ -112,6 +112,21 @@ export async function getOverview(): Promise<Overview> {
   return request<Overview>('/overview');
 }
 
+// ---- search (the ⌘K command palette) ----
+
+export async function getSearch(query: string): Promise<SearchResponse> {
+  return request<SearchResponse>(`/search?q=${encodeURIComponent(query)}`);
+}
+
+// ---- settings ----
+
+export async function getSettings(): Promise<Settings> {
+  return request<Settings>('/settings');
+}
+export async function patchSettings(patch: Partial<Settings>): Promise<Settings> {
+  return request<Settings>('/settings', { method: 'PATCH', body: patch });
+}
+
 // ---- projects ----
 
 export async function getProjects(): Promise<Project[]> {
@@ -125,13 +140,17 @@ export interface ProjectDetailData {
   bugs: Bug[];
   roadmap: Roadmap;
   notes: Note[];
+  keepResumeCard: boolean;
 }
 
 export async function getProjectDetail(slug: string): Promise<ProjectDetailData> {
   const d = await request<ProjectPayload & {
-    activity: Activity[]; bugs: Bug[]; roadmap: Roadmap; notes: Note[];
+    activity: Activity[]; bugs: Bug[]; roadmap: Roadmap; notes: Note[]; keepResumeCard?: boolean;
   }>(`/projects/${encodeURIComponent(slug)}`);
-  return { project: toProject(d), activity: d.activity, bugs: d.bugs, roadmap: d.roadmap, notes: d.notes };
+  return {
+    project: toProject(d), activity: d.activity, bugs: d.bugs, roadmap: d.roadmap, notes: d.notes,
+    keepResumeCard: d.keepResumeCard !== false,
+  };
 }
 
 export async function createProject(input: { name: string; subtitle: string; status: ProjectStatus }): Promise<Project> {

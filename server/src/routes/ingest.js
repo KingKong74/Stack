@@ -4,6 +4,7 @@ import {
   slugify, fingerprint, asList, oneOf, TINTS,
   SEVERITIES, BUCKETS,
 } from '../util.js';
+import { readSettings } from '../settings.js';
 
 export const ingest = Router();
 
@@ -41,6 +42,7 @@ function asStepCandidates(v) {
  *   project: { slug?, name?, repo?, repo_url? },
  *   session: {
  *     session_id?, commit_hash?, branch?, cwd?, model?, reason?, message_count?,
+ *     authored?,                       // true = rich /checkpoint, false = metadata backstop
  *     summary?, current_phase?, next_steps?[], blockers?[],
  *     files_touched?[], tools_used?[], tags?[],
  *     in_progress?[], next_up?[], working_well?[]
@@ -68,6 +70,11 @@ ingest.post('/', async (req, res) => {
   const repoUrl = str(p.repo_url, 500);
   const commit = str(s.commit_hash, 80);
 
+  // authored = a rich Claude-authored /checkpoint. Metadata-only backstops from
+  // the SessionEnd hook leave this false, which keeps them from overwriting an
+  // existing authored summary / the project's resume fields for the same commit.
+  const authored = Boolean(s.authored);
+
   const session = {
     session_id: str(s.session_id, 200),
     commit_hash: commit,
@@ -94,6 +101,10 @@ ingest.post('/', async (req, res) => {
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
+
+    // Settings gate (read inside the txn). keep_resume_card off means we still
+    // record the activity row but never touch the project's resume fields.
+    const settings = await readSettings(client);
 
     // --- 1. Upsert project identity (first push creates it + assigns a tint) ---
     let projectId;
@@ -144,51 +155,80 @@ ingest.post('/', async (req, res) => {
       JSON.stringify(session.next_steps), JSON.stringify(session.blockers),
       JSON.stringify(session.files_touched), JSON.stringify(session.tools_used),
       JSON.stringify(session.tags), session.branch, session.cwd, session.model,
-      session.reason, session.message_count,
+      session.reason, session.message_count, authored,
     ];
 
     if (existingSession) {
-      // Re-running the hook for the same push refreshes the row, never duplicates it.
+      // Re-running for the same push refreshes the row, never duplicates it.
+      // COALESCE-safe: a metadata post ($15 = false) never clobbers an existing
+      // authored summary, and the jsonb lists only overwrite when non-empty.
       await client.query(
         `UPDATE sessions SET
-           session_id=$2, commit_hash=$3, summary=$4, current_phase=$5,
-           next_steps=$6::jsonb, blockers=$7::jsonb, files_touched=$8::jsonb,
-           tools_used=$9::jsonb, tags=$10::jsonb, branch=$11, cwd=$12, model=$13,
-           reason=$14, message_count=$15
+           session_id=COALESCE($2, session_id),
+           commit_hash=COALESCE($3, commit_hash),
+           summary = CASE
+             WHEN $15 THEN COALESCE($4, summary)        -- incoming authored: it wins
+             WHEN authored THEN summary                 -- existing authored, incoming metadata: keep
+             ELSE COALESCE(NULLIF(summary, ''), $4)     -- both metadata: keep if non-empty
+           END,
+           current_phase = CASE
+             WHEN $15 THEN COALESCE($5, current_phase)
+             WHEN authored THEN current_phase
+             ELSE COALESCE(NULLIF(current_phase, ''), $5)
+           END,
+           next_steps    = CASE WHEN $6::jsonb  = '[]'::jsonb THEN next_steps    ELSE $6::jsonb  END,
+           blockers      = CASE WHEN $7::jsonb  = '[]'::jsonb THEN blockers      ELSE $7::jsonb  END,
+           files_touched = CASE WHEN $8::jsonb  = '[]'::jsonb THEN files_touched ELSE $8::jsonb  END,
+           tools_used    = CASE WHEN $9::jsonb  = '[]'::jsonb THEN tools_used    ELSE $9::jsonb  END,
+           tags          = CASE WHEN $10::jsonb = '[]'::jsonb THEN tags          ELSE $10::jsonb END,
+           branch=COALESCE($11, branch), cwd=COALESCE($12, cwd), model=COALESCE($13, model),
+           reason=$14, message_count=COALESCE($16, message_count),
+           authored = (authored OR $15)
          WHERE id=$1`,
-        [existingSession.id, ...sessionCols]
+        // $1=id, $2..$14 as listed, $15=authored (boolean), $16=message_count
+        [existingSession.id, session.session_id, session.commit_hash, session.summary,
+         session.current_phase, JSON.stringify(session.next_steps), JSON.stringify(session.blockers),
+         JSON.stringify(session.files_touched), JSON.stringify(session.tools_used),
+         JSON.stringify(session.tags), session.branch, session.cwd, session.model,
+         session.reason, authored, session.message_count]
       );
     } else {
       await client.query(
         `INSERT INTO sessions
            (project_id, session_id, commit_hash, summary, current_phase, next_steps,
             blockers, files_touched, tools_used, tags, branch, cwd, model, reason,
-            message_count, source)
+            message_count, authored, source)
          VALUES ($1,$2,$3,$4,$5,$6::jsonb,$7::jsonb,$8::jsonb,$9::jsonb,$10::jsonb,
-                 $11,$12,$13,$14,$15,'hook')`,
+                 $11,$12,$13,$14,$15,$16,'hook')`,
         [projectId, ...sessionCols]
       );
     }
 
     // --- 3. Refresh the project's live resume state (COALESCE / keep-if-empty) ---
-    await client.query(
-      `UPDATE projects SET
-         summary       = COALESCE($2, summary),
-         current_phase = COALESCE($3, current_phase),
-         next_steps    = CASE WHEN $4::jsonb = '[]'::jsonb THEN next_steps   ELSE $4::jsonb END,
-         blockers      = $5::jsonb,
-         in_progress   = CASE WHEN $6::jsonb = '[]'::jsonb THEN in_progress  ELSE $6::jsonb END,
-         next_up       = CASE WHEN $7::jsonb = '[]'::jsonb THEN next_up      ELSE $7::jsonb END,
-         working_well  = CASE WHEN $8::jsonb = '[]'::jsonb THEN working_well ELSE $8::jsonb END,
-         updated_at    = now()
-       WHERE id = $1`,
-      [
-        projectId, session.summary, session.current_phase,
-        JSON.stringify(session.next_steps), JSON.stringify(session.blockers),
-        JSON.stringify(session.in_progress), JSON.stringify(session.next_up),
-        JSON.stringify(session.working_well),
-      ]
-    );
+    // Only an authored /checkpoint refreshes the resume card; the metadata-only
+    // hook backstop never touches it (so it can't clobber rich Claude-authored
+    // content). Also skipped entirely when keep_resume_card is off — in which
+    // case the activity row above still lands (the feed never has gaps).
+    if (settings.keep_resume_card && authored) {
+      await client.query(
+        `UPDATE projects SET
+           summary       = COALESCE($2, summary),
+           current_phase = COALESCE($3, current_phase),
+           next_steps    = CASE WHEN $4::jsonb = '[]'::jsonb THEN next_steps   ELSE $4::jsonb END,
+           blockers      = $5::jsonb,
+           in_progress   = CASE WHEN $6::jsonb = '[]'::jsonb THEN in_progress  ELSE $6::jsonb END,
+           next_up       = CASE WHEN $7::jsonb = '[]'::jsonb THEN next_up      ELSE $7::jsonb END,
+           working_well  = CASE WHEN $8::jsonb = '[]'::jsonb THEN working_well ELSE $8::jsonb END,
+           updated_at    = now()
+         WHERE id = $1`,
+        [
+          projectId, session.summary, session.current_phase,
+          JSON.stringify(session.next_steps), JSON.stringify(session.blockers),
+          JSON.stringify(session.in_progress), JSON.stringify(session.next_up),
+          JSON.stringify(session.working_well),
+        ]
+      );
+    }
 
     // --- 4. Land auto-extracted bugs ---
     const dismissed = async (kind, fp) => {

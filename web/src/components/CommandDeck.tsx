@@ -6,13 +6,13 @@ import { go } from '../lib/route';
 // a resume hero, a quiet attention row, and a merged activity stream.
 // Calm when all's well; loud only where something needs attention.
 export function CommandDeck({ data }: { data: Overview }) {
-  const { resume, blockers, stale, bugs, activity } = data;
+  const { resume, keepResumeCard, blockers, stale, bugs, activity } = data;
   const worstBug = bugs.projects[0] || null;
 
   return (
     <section className="deck" aria-label="Command deck">
-      {/* resume hero */}
-      {resume ? (
+      {/* resume hero — hidden entirely when the resume card is switched off */}
+      {!keepResumeCard ? null : resume ? (
         <div className="deck-hero">
           <div className="hero-main">
             <div className="hero-eyebrow"><span className="resume-ico">↩</span> Pick up where you left off</div>

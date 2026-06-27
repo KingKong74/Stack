@@ -7,10 +7,10 @@ const matches = (b: Bug, f: BugFilter) =>
   f === 'all' ? true : f === 'open' ? (b.status === 'open' || b.status === 'investigating') : b.status === f;
 
 export function Bugs({
-  bugs, filter, setFilter, onReport, onOpenLink,
+  bugs, filter, setFilter, onReport, onOpenLink, highlightId,
 }: {
   bugs: Bug[]; filter: BugFilter; setFilter: (f: BugFilter) => void;
-  onReport: () => void; onOpenLink: (hash: string) => void;
+  onReport: () => void; onOpenLink: (hash: string) => void; highlightId?: string | null;
 }) {
   const counts = {
     all: bugs.length,
@@ -45,7 +45,7 @@ export function Bugs({
       {visible.length ? (
         <div className="buglist">
           {visible.map((b) => (
-            <div className="bug" key={b.id}>
+            <div className={`bug ${highlightId === b.id ? 'hl' : ''}`} key={b.id} data-hl={b.id}>
               <div className={`sev-bar ${b.severity}`} />
               <div className="bug-body">
                 <div className="bug-main">

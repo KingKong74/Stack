@@ -114,6 +114,10 @@ function buildBlock(p) {
   }
 
   lines.push('', 'This reflects the live Stack state — trust it rather than reconstructing context from scratch.');
+  lines.push(
+    'When you wrap up meaningful work, run `/checkpoint` to author a rich resume update ' +
+    '(free, no external API). The SessionEnd hook records metadata automatically as a backstop.'
+  );
   return lines.join('\n');
 }
 

@@ -2,9 +2,10 @@ import type { Roadmap as RoadmapData, RoadmapItem, Priority } from '../types';
 import { PRIORITY_META } from '../lib/ui';
 
 export function Roadmap({
-  roadmap, onAdd, onToggle,
+  roadmap, onAdd, onToggle, highlightId,
 }: {
   roadmap: RoadmapData; onAdd: (p: Priority) => void; onToggle: (item: RoadmapItem) => void;
+  highlightId?: string | null;
 }) {
   return (
     <div>
@@ -31,7 +32,7 @@ export function Roadmap({
               </div>
               <div className="road-items">
                 {items.map((it) => (
-                  <div className={`road-item ${it.done ? 'done' : ''}`} key={it.id}>
+                  <div className={`road-item ${it.done ? 'done' : ''} ${highlightId === String(it.id) ? 'hl' : ''}`} key={it.id} data-hl={it.id}>
                     <button
                       className={`road-check ${it.done ? 'on' : ''}`}
                       onClick={() => onToggle(it)}

@@ -18,17 +18,19 @@ function ActivityCard({ a }: { a: Activity }) {
 }
 
 export function Overview({
-  project, activity, openBugCount, fixingCount, roadmapCount, onViewAll,
+  project, activity, openBugCount, fixingCount, roadmapCount, onViewAll, keepResumeCard = true,
 }: {
   project: Project; activity: Activity[];
   openBugCount: number; fixingCount: number; roadmapCount: number; onViewAll: () => void;
+  keepResumeCard?: boolean;
 }) {
   const r = project.resume;
   const latest = activity.slice(0, 2);
 
   return (
     <div>
-      {/* resume card */}
+      {/* resume card — hidden when the resume card is switched off in Settings */}
+      {keepResumeCard && (
       <div className="resume">
         <div className="resume-head">
           <div className="left">
@@ -74,6 +76,7 @@ export function Overview({
           </div>
         )}
       </div>
+      )}
 
       {/* stat panels */}
       <div className="stats">

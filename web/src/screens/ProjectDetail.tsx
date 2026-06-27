@@ -28,7 +28,9 @@ const roadmapTotal = (r: RoadmapData) => r.must.length + r.should.length + r.cou
 const TAB_KEYS = new Set<Tab>(['overview', 'bugs', 'roadmap', 'notes', 'activity']);
 const asTab = (t: string | undefined): Tab => (t && TAB_KEYS.has(t as Tab) ? (t as Tab) : 'overview');
 
-export function ProjectDetail({ id, tab }: { id: string; tab?: string }) {
+export function ProjectDetail({ id, tab, highlight, onOpenSearch }: {
+  id: string; tab?: string; highlight?: string; onOpenSearch: () => void;
+}) {
   const [data, setData] = useState<ProjectDetailData | null>(null);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState('');
@@ -55,7 +57,7 @@ export function ProjectDetail({ id, tab }: { id: string; tab?: string }) {
       </Shell>
     );
   }
-  return <Detail data={data} setData={setData} initialTab={asTab(tab)} />;
+  return <Detail data={data} setData={setData} routeTab={tab} routeHighlight={highlight} onOpenSearch={onOpenSearch} />;
 }
 
 function Shell({ children }: { children: ReactNode }) {
@@ -72,13 +74,42 @@ function Shell({ children }: { children: ReactNode }) {
   );
 }
 
-function Detail({ data, setData, initialTab }: { data: ProjectDetailData; setData: (d: ProjectDetailData) => void; initialTab: Tab }) {
+function Detail({ data, setData, routeTab, routeHighlight, onOpenSearch }: {
+  data: ProjectDetailData; setData: (d: ProjectDetailData) => void;
+  routeTab?: string; routeHighlight?: string; onOpenSearch: () => void;
+}) {
   const { project, activity } = data;
   const slug = project.id;
 
+  const initialTab = asTab(routeTab);
   const [tab, setTab] = useState<Tab>(initialTab);
   const [bugFilter, setBugFilter] = useState<BugFilter>('all');
-  const [highlightRef, setHighlightRef] = useState<string | null>(null);
+  // Two highlight channels: a commit hash (the existing activity highlight) and
+  // a row id (bug key / roadmap id / note id) for the other tabs. A search
+  // deep-link sets whichever matches the tab it lands on.
+  const [highlightRef, setHighlightRef] = useState<string | null>(
+    initialTab === 'activity' ? (routeHighlight ?? null) : null);
+  const [highlightId, setHighlightId] = useState<string | null>(
+    initialTab !== 'activity' ? (routeHighlight ?? null) : null);
+
+  // Keep tab + highlight in sync when the route changes while staying on the
+  // same project (e.g. opening another of this project's items from the palette).
+  useEffect(() => {
+    const t = asTab(routeTab);
+    setTab(t);
+    if (t === 'activity') { setHighlightRef(routeHighlight ?? null); setHighlightId(null); }
+    else { setHighlightId(routeHighlight ?? null); setHighlightRef(null); }
+  }, [routeTab, routeHighlight]);
+
+  // The row highlight is a brief flag; clear it after a moment so it doesn't
+  // linger. (The activity highlight keeps its own explicit clear control.)
+  useEffect(() => {
+    if (!highlightId) return;
+    const node = document.querySelector(`[data-hl="${highlightId}"]`);
+    node?.scrollIntoView({ block: 'center', behavior: 'smooth' });
+    const t = setTimeout(() => setHighlightId(null), 2800);
+    return () => clearTimeout(t);
+  }, [highlightId, tab]);
   const [bugModal, setBugModal] = useState<{ open: boolean; title: string; fromNote: number | null }>(
     { open: false, title: '', fromNote: null });
   const [roadModal, setRoadModal] = useState<{ open: boolean; priority: Priority; title: string; fromNote: number | null }>(
@@ -194,8 +225,12 @@ function Detail({ data, setData, initialTab }: { data: ProjectDetailData; setDat
           <span className="here">{project.name}</span>
         </div>
         <div className="right">
-          <div className="searchbox sm lg">Search this project…</div>
-          <div className="avatar sm" />
+          <button className="searchbox sm lg as-button" onClick={onOpenSearch} aria-label="Search everything (⌘K)">
+            <span className="glass" />
+            <span style={{ color: 'var(--faint)' }}>Search…</span>
+            <span className="kbd-hint">⌘K</span>
+          </button>
+          <button className="avatar sm" onClick={go.settings} aria-label="Settings" />
         </div>
       </div>
 
@@ -240,18 +275,19 @@ function Detail({ data, setData, initialTab }: { data: ProjectDetailData; setDat
         </div>
 
         {tab === 'overview' && (
-          <Overview project={project} activity={activity}
+          <Overview project={project} activity={activity} keepResumeCard={data.keepResumeCard}
             openBugCount={openBugCount} fixingCount={fixingCount} roadmapCount={roadmapCount} onViewAll={viewAll} />
         )}
         {tab === 'bugs' && (
-          <Bugs bugs={bugs} filter={bugFilter} setFilter={setBugFilter}
+          <Bugs bugs={bugs} filter={bugFilter} setFilter={setBugFilter} highlightId={highlightId}
             onReport={() => setBugModal({ open: true, title: '', fromNote: null })} onOpenLink={openBugLink} />
         )}
         {tab === 'roadmap' && (
-          <Roadmap roadmap={roadmap} onAdd={(p) => setRoadModal({ open: true, priority: p, title: '', fromNote: null })} onToggle={toggleRoad} />
+          <Roadmap roadmap={roadmap} highlightId={highlightId}
+            onAdd={(p) => setRoadModal({ open: true, priority: p, title: '', fromNote: null })} onToggle={toggleRoad} />
         )}
         {tab === 'notes' && (
-          <Notes notes={notes} onAdd={addNote} onEdit={editNote} onDelete={removeNote} onPromote={promoteNote} />
+          <Notes notes={notes} highlightId={highlightId} onAdd={addNote} onEdit={editNote} onDelete={removeNote} onPromote={promoteNote} />
         )}
         {tab === 'activity' && (
           <Activity activity={activity} highlightRef={highlightRef} linkedBugId={linkedBugId} onClear={() => setHighlightRef(null)} />

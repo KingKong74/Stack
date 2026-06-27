@@ -90,6 +90,7 @@ export interface OverviewActivity {
 }
 export interface Overview {
   resume: OverviewResume | null;
+  keepResumeCard: boolean;
   blockers: OverviewBlocker[];
   stale: OverviewStale[];
   bugs: { total: number; projects: OverviewBugProject[] };
@@ -99,4 +100,33 @@ export interface Overview {
     openBugs: number;
     pushesThisWeek: number;
   };
+}
+
+// ---- ⌘K command palette search (GET /api/search) ----
+export type SearchKind = 'project' | 'bug' | 'roadmap' | 'note' | 'activity';
+export interface SearchTarget { slug: string; tab: string; highlight: string | null }
+export interface SearchResult {
+  kind: SearchKind;
+  slug: string; name: string; tint: string | null;
+  title: string; meta: string;
+  target: SearchTarget;
+}
+export interface SearchGroups {
+  projects: SearchResult[]; bugs: SearchResult[]; roadmap: SearchResult[];
+  notes: SearchResult[]; activity: SearchResult[];
+}
+export interface SearchResponse {
+  query: string;
+  groups: SearchGroups;
+  counts: { projects: number; bugs: number; roadmap: number; notes: number; activity: number; total: number };
+  projectCount: number;
+}
+
+// ---- settings (GET/PATCH /api/settings) ----
+export type CheckpointDetail = 'brief' | 'standard' | 'detailed';
+export interface Settings {
+  autoRecord: boolean;
+  keepResumeCard: boolean;
+  checkpointDetail: CheckpointDetail;
+  includeChores: boolean;
 }

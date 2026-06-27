@@ -2,13 +2,14 @@ import { useState } from 'react';
 import type { Note } from '../types';
 
 export function Notes({
-  notes, onAdd, onEdit, onDelete, onPromote,
+  notes, onAdd, onEdit, onDelete, onPromote, highlightId,
 }: {
   notes: Note[];
   onAdd: (text: string) => void;
   onEdit: (id: number, text: string) => void;
   onDelete: (id: number) => void;
   onPromote: (note: Note, kind: 'bug' | 'roadmap') => void;
+  highlightId?: string | null;
 }) {
   const [draft, setDraft] = useState('');
 
@@ -44,7 +45,7 @@ export function Notes({
 
       <div className="notes-wall">
         {notes.map((n, i) => (
-          <NoteCard key={n.id} note={n} rotate={i % 2 ? 0.7 : -0.7}
+          <NoteCard key={n.id} note={n} rotate={i % 2 ? 0.7 : -0.7} highlighted={highlightId === String(n.id)}
             onEdit={onEdit} onDelete={onDelete} onPromote={onPromote} />
         ))}
       </div>
@@ -53,10 +54,11 @@ export function Notes({
 }
 
 function NoteCard({
-  note, rotate, onEdit, onDelete, onPromote,
+  note, rotate, highlighted, onEdit, onDelete, onPromote,
 }: {
   note: Note;
   rotate: number;
+  highlighted?: boolean;
   onEdit: (id: number, text: string) => void;
   onDelete: (id: number) => void;
   onPromote: (note: Note, kind: 'bug' | 'roadmap') => void;
@@ -72,7 +74,7 @@ function NoteCard({
   const cancel = () => { setDraft(note.text); setEditing(false); };
 
   return (
-    <div className="note" style={{ background: note.colour, transform: `rotate(${rotate}deg)` }}>
+    <div className={`note ${highlighted ? 'hl' : ''}`} data-hl={note.id} style={{ background: note.colour, transform: `rotate(${rotate}deg)` }}>
       <button className="x" onClick={() => onDelete(note.id)} aria-label="Delete note">×</button>
       {editing ? (
         <textarea

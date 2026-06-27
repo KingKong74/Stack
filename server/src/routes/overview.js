@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { q } from '../db.js';
 import { relativeTime, STALE_DAYS } from '../util.js';
+import { readSettings } from '../settings.js';
 
 // GET /api/overview — the cross-project command deck, computed server-side in a
 // handful of aggregate queries (never one request per project).
@@ -8,6 +9,7 @@ import { relativeTime, STALE_DAYS } from '../util.js';
 // Response shape:
 // {
 //   resume: { slug, name, tint, summary, currentPhase, nextUp[] } | null,
+//   keepResumeCard: true,    // false hides the resume hero (settings)
 //   blockers: [ { slug, name, text } ],
 //   stale:    [ { slug, name, since } ],
 //   bugs:     { total, projects: [ { slug, name, count } ] },
@@ -21,6 +23,8 @@ const asList = (v) => (Array.isArray(v) ? v : []);
 const ms = (ts) => (ts ? new Date(ts).getTime() : -1);
 
 overview.get('/', async (_req, res) => {
+  const appSettings = await readSettings();
+
   // Four aggregate queries, run together — no per-project fan-out.
   const [projectsR, bugsR, recentR, weekR] = await Promise.all([
     q(`SELECT id, slug, name, tint, status, summary, current_phase,
@@ -43,9 +47,11 @@ overview.get('/', async (_req, res) => {
   const sorted = [...projects].sort((a, b) =>
     ms(b.last_session_at) - ms(a.last_session_at) || ms(b.updated_at) - ms(a.updated_at));
 
-  // resume: most-recent active project, else most-recent of any status.
+  // resume: most-recent active project, else most-recent of any status. When
+  // keep_resume_card is off the hero is hidden cleanly (resume = null and the
+  // flag below lets the deck skip the block entirely).
   const pick = sorted.find(isActive) || sorted[0] || null;
-  const resume = pick ? {
+  const resume = (appSettings.keep_resume_card && pick) ? {
     slug: pick.slug,
     name: pick.name,
     tint: pick.tint || null,
@@ -103,6 +109,7 @@ overview.get('/', async (_req, res) => {
 
   res.json({
     resume,
+    keepResumeCard: appSettings.keep_resume_card,
     blockers,
     stale,
     bugs: { total: seriousTotal, projects: bugProjects },

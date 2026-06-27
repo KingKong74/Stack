@@ -7,6 +7,7 @@ import {
   bugShape, groupRoadmap, noteShape, activityShape,
   projectListShape, projectDetailShape,
 } from '../shape.js';
+import { readSettings } from '../settings.js';
 
 export const projects = Router();
 
@@ -92,6 +93,7 @@ projects.get('/:slug', async (req, res) => {
   if (!rows.length) return res.status(404).json({ error: 'No such project.' });
   const p = rows[0];
 
+  const appSettings = await readSettings();
   const [sessions, bugs, road, notes, weekly] = await Promise.all([
     q(
       `SELECT commit_hash, branch, summary, tags, created_at FROM sessions
@@ -117,6 +119,7 @@ projects.get('/:slug', async (req, res) => {
       bugs: bugs.rows.map(bugShape),
       roadmap: groupRoadmap(road.rows),
       notes: notes.rows.map(noteShape),
+      keepResumeCard: appSettings.keep_resume_card,
     })
   );
 });

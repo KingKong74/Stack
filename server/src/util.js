@@ -17,6 +17,9 @@ export const BUG_STATUSES = ['open', 'investigating', 'fixing', 'fixed'];
 export const BUCKETS = ['must', 'should', 'could', 'wont'];
 export const PROJECT_STATUSES = ['live', 'building', 'paused', 'archived'];
 
+// Short MoSCoW labels, used by the search route's meta field.
+export const PRIORITY_SHORT = { must: 'Must', should: 'Should', could: 'Could', wont: "Won't" };
+
 // Days since last push after which a live/building project counts as "stale"
 // on the command deck. Single knob — change it here and GET /api/overview
 // follows. Paused/archived projects are dormant on purpose and never stale.

@@ -28,10 +28,13 @@ constant (`web/src/lib/ui.ts` → `PRODUCT_NAME`) if you ever want to change it.
 stack/
   web/        Vite + React + TypeScript frontend (the dashboard + detail UI)
   server/     Express + Postgres API (ingest + projects + collections)
-  hook/       Claude Code hooks — SessionStart injects "where you left off",
-              SessionEnd posts a checkpoint + extraction package per session
+  hook/       Claude Code hooks + the /checkpoint poster (no external API):
+              SessionStart injects "where you left off"; SessionEnd posts a metadata
+              backstop; stack-checkpoint.mjs posts Claude-authored /checkpoint JSON;
+              stack-post.mjs is the shared lib
   templates/  stack-agent-context.md — portable operating manual for a fresh agent
   scripts/    stack-context.mjs — prints that template (optionally stamped) to stdout
+  .claude/commands/checkpoint.md — the /checkpoint slash command (install to ~/.claude/commands/)
   docker-compose.yml   db + server + web, for the mini-PC deploy
 ```
 
@@ -56,6 +59,15 @@ stack/
   attention row, and a merged activity stream. A project counts as **stale** once a live/building
   project's last push is older than a threshold; that threshold is one constant, `STALE_DAYS` in
   `server/src/util.js` (default 14) — change it there and the deck follows.
+- **A ⌘K command palette** searches across everything — project names, bug titles, roadmap items,
+  notes and activity summaries — grouped by kind, fully keyboard-driven, and every result jumps
+  straight to its project tab with the item highlighted (`GET /api/search`).
+- **A scoped Settings screen** (from the avatar) controls how Stack records your work: automatic
+  recording, the resume card, the authored-summary detail level, and whether chore-only sessions count
+  (`GET|PATCH /api/settings`). Plus a masked token indicator, a connection test, and sign-out.
+- **Checkpoints are Claude-authored — free, no external API.** Run `/checkpoint` to write a rich
+  resume update; the SessionEnd hook records metadata automatically as a backstop so the activity feed
+  never has gaps.
 
 ## Run the full stack (compose)
 
@@ -87,47 +99,59 @@ Vite proxies `/api` to `http://localhost:4000`, so you need the **server running
 `cd server && npm install && npm run dev` with `DATABASE_URL` + `API_TOKEN` set). The app opens on
 the token gate; paste the same `API_TOKEN` to continue.
 
-## The hooks (the round-trip)
+## The hooks + /checkpoint (the round-trip)
 
-Two zero-dependency Node hooks close the loop. Both derive the project the same way (git
-remote/branch, falling back to the directory name), load secrets from `~/.stack/env`, never print
-the token, and always exit 0 so they can't block or delay Claude Code.
+Stack uses **no external AI API**. Rich resume summaries are authored by Claude itself via the
+`/checkpoint` command (free); the hooks are zero-dependency, derive the project the same way (git
+remote/branch, falling back to the directory name), load secrets from `~/.stack/env`, never print the
+token, and always exit 0 so they can't block or delay Claude Code.
 
-- **SessionEnd** — when a session ends, captures the current commit (short `rev-parse`), parses the
-  transcript, and — if `ANTHROPIC_API_KEY` is set — asks a cheap model for a structured summary
-  **plus** the resume sub-lists, a couple of tags, candidate bugs and prioritised next-steps. It
-  POSTs that package to `STACK_API/api/ingest`. Without an API key it falls back to the last-message
-  summary and empty extraction lists.
-- **SessionStart** — when a session starts or resumes, asks `STACK_API/api/projects/:slug` for the
-  project's current state and injects a concise "where you left off" block (resume summary, current
-  phase, in-progress / next-up / blockers, open-bug count, and the last few activity entries) using
-  the SessionStart hook's `additionalContext` mechanism. If the project isn't tracked yet or the API
-  is unreachable, it emits nothing and gets out of the way.
+- **SessionEnd** — a clean **metadata backstop**. When a session ends it parses the transcript for the
+  commit, branch, files touched, tools used, message count and the last substantive message, and POSTs
+  that to `STACK_API/api/ingest` (as `authored:false`). It calls no external API. It's idempotent and
+  COALESCE-safe: a metadata post **never overwrites** a richer authored checkpoint or the resume card
+  for the same commit — it just guarantees the activity feed never has gaps. It honours the
+  `auto_record` and `include_chores` settings (bounded, defaulting to on if the API is unreachable).
+- **SessionStart** — asks `STACK_API/api/projects/:slug` for the project's current state and injects a
+  concise "where you left off" block (resume summary, current phase, in-progress / next-up / blockers,
+  open-bug count, and the last few activity entries) via the hook's `additionalContext` mechanism,
+  nudging you to run `/checkpoint` when wrapping up. If the project isn't tracked yet or the API is
+  unreachable, it emits nothing and gets out of the way.
+- **`/checkpoint`** — the slash command you run when you finish a unit of work. It reads your settings
+  (the `checkpoint_detail` level shapes how much the summary explains), derives the slug from the git
+  remote, has Claude compose the full checkpoint schema (summary, phase, in-progress, next-up,
+  working-well, blockers, tags, plus candidate bugs and next-steps for auto-extraction), and pipes
+  that JSON to `~/.stack/stack-checkpoint.mjs`, which posts it (`authored:true`). The poster reads the
+  token from `~/.stack/env` and never prints it.
 
-Three-step install on whichever machine runs Claude Code:
+Install on whichever machine runs Claude Code:
 
 ```bash
-# 1. drop both hook scripts
-mkdir -p ~/.stack && cp hook/stack-session-start.mjs hook/stack-session-end.mjs ~/.stack/
+# 1. drop the hooks, the shared lib and the /checkpoint poster
+mkdir -p ~/.stack && cp hook/stack-session-start.mjs hook/stack-session-end.mjs \
+  hook/stack-post.mjs hook/stack-checkpoint.mjs ~/.stack/
 
-# 2. create ~/.stack/env  (this file holds the secrets; never commit it)
+# 2. install the /checkpoint slash command
+mkdir -p ~/.claude/commands && cp .claude/commands/checkpoint.md ~/.claude/commands/
+
+# 3. create ~/.stack/env  (this file holds the secrets; never commit it)
 cat > ~/.stack/env <<'ENV'
 STACK_API=https://stack.your-domain
 STACK_TOKEN=the-same-value-as-API_TOKEN
-# optional — enables structured AI summaries + extraction instead of a raw last-message fallback:
-ANTHROPIC_API_KEY=sk-ant-...
 ENV
 
-# 3. merge hook/settings.snippet.json into ~/.claude/settings.json
+# 4. merge hook/settings.snippet.json into ~/.claude/settings.json
 #    (it registers both SessionStart and SessionEnd)
 ```
 
-Test them without a real session (the end hook fires a synthetic checkpoint with a demo bug +
-next-steps; the start hook prints the block it would inject for the current repo):
+Test without a real session (the end hook fires its metadata backstop; the start hook prints the block
+it would inject; the poster can author a checkpoint or print the current settings):
 
 ```bash
 node ~/.stack/stack-session-end.mjs --demo
 node ~/.stack/stack-session-start.mjs --demo
+node ~/.stack/stack-checkpoint.mjs --settings
+echo '{"project":{"slug":"stack"},"session":{"summary":"Quick manual checkpoint."}}' | node ~/.stack/stack-checkpoint.mjs
 ```
 
 ## The agent-context template

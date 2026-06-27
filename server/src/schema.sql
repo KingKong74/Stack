@@ -54,6 +54,9 @@ CREATE TABLE IF NOT EXISTS sessions (
 -- Session additions: the commit the push landed on, and activity-feed tags.
 ALTER TABLE sessions ADD COLUMN IF NOT EXISTS commit_hash TEXT;
 ALTER TABLE sessions ADD COLUMN IF NOT EXISTS tags        JSONB NOT NULL DEFAULT '[]'::jsonb;
+-- authored = a rich Claude-authored /checkpoint (vs the hook's metadata backstop).
+-- Once true it stays true, so a later metadata post can't downgrade a rich row.
+ALTER TABLE sessions ADD COLUMN IF NOT EXISTS authored    BOOLEAN NOT NULL DEFAULT false;
 
 -- Per-project bug tracker. bug_key is the human "BUG-N" id, unique per project.
 CREATE TABLE IF NOT EXISTS bugs (
@@ -119,3 +122,21 @@ CREATE TABLE IF NOT EXISTS dismissed_items (
 
 CREATE INDEX IF NOT EXISTS idx_sessions_project ON sessions (project_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_projects_touch  ON projects (pinned DESC, last_session_at DESC NULLS LAST);
+
+-- Single-row app settings. The boolean primary key (always true) makes this a
+-- singleton: there can only ever be one row. Meanings under the no-API model:
+--   auto_record       — does the SessionEnd hook post its metadata backstop
+--   keep_resume_card  — does ingest refresh the project's resume fields (and the
+--                       command deck show the resume hero)
+--   checkpoint_detail — how much the /checkpoint authored summary explains
+--   include_chores    — do chore-only sessions get a checkpoint
+CREATE TABLE IF NOT EXISTS settings (
+  id                BOOLEAN PRIMARY KEY DEFAULT true,
+  auto_record       BOOLEAN NOT NULL DEFAULT true,
+  keep_resume_card  BOOLEAN NOT NULL DEFAULT true,
+  checkpoint_detail TEXT    NOT NULL DEFAULT 'standard',  -- brief | standard | detailed
+  include_chores    BOOLEAN NOT NULL DEFAULT false,
+  updated_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
+  CONSTRAINT settings_singleton CHECK (id)
+);
+INSERT INTO settings (id) VALUES (true) ON CONFLICT (id) DO NOTHING;
