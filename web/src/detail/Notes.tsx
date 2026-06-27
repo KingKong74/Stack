@@ -2,8 +2,14 @@ import { useState } from 'react';
 import type { Note } from '../types';
 
 export function Notes({
-  notes, onAdd, onDelete,
-}: { notes: Note[]; onAdd: (text: string) => void; onDelete: (id: number) => void }) {
+  notes, onAdd, onEdit, onDelete, onPromote,
+}: {
+  notes: Note[];
+  onAdd: (text: string) => void;
+  onEdit: (id: number, text: string) => void;
+  onDelete: (id: number) => void;
+  onPromote: (note: Note, kind: 'bug' | 'roadmap') => void;
+}) {
   const [draft, setDraft] = useState('');
 
   const add = () => {
@@ -38,12 +44,61 @@ export function Notes({
 
       <div className="notes-wall">
         {notes.map((n, i) => (
-          <div className="note" key={n.id} style={{ background: n.colour, transform: `rotate(${i % 2 ? 0.7 : -0.7}deg)` }}>
-            <button className="x" onClick={() => onDelete(n.id)} aria-label="Delete note">×</button>
-            <div className="txt">{n.text}</div>
-            <div className="when">{n.when}</div>
-          </div>
+          <NoteCard key={n.id} note={n} rotate={i % 2 ? 0.7 : -0.7}
+            onEdit={onEdit} onDelete={onDelete} onPromote={onPromote} />
         ))}
+      </div>
+    </div>
+  );
+}
+
+function NoteCard({
+  note, rotate, onEdit, onDelete, onPromote,
+}: {
+  note: Note;
+  rotate: number;
+  onEdit: (id: number, text: string) => void;
+  onDelete: (id: number) => void;
+  onPromote: (note: Note, kind: 'bug' | 'roadmap') => void;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(note.text);
+
+  const save = () => {
+    const t = draft.trim();
+    if (t && t !== note.text) onEdit(note.id, t);
+    setEditing(false);
+  };
+  const cancel = () => { setDraft(note.text); setEditing(false); };
+
+  return (
+    <div className="note" style={{ background: note.colour, transform: `rotate(${rotate}deg)` }}>
+      <button className="x" onClick={() => onDelete(note.id)} aria-label="Delete note">×</button>
+      {editing ? (
+        <textarea
+          className="note-edit"
+          value={draft}
+          autoFocus
+          onChange={(e) => setDraft(e.target.value)}
+          onBlur={save}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); save(); }
+            else if (e.key === 'Escape') { e.preventDefault(); cancel(); }
+          }}
+        />
+      ) : (
+        <div className="txt" onClick={() => { setDraft(note.text); setEditing(true); }} title="Click to edit">
+          {note.text}
+        </div>
+      )}
+      <div className="note-foot">
+        <span className="when">{note.when}</span>
+        {!editing && (
+          <span className="note-actions">
+            <button className="promote" onClick={() => onPromote(note, 'bug')}>→ Bug</button>
+            <button className="promote" onClick={() => onPromote(note, 'roadmap')}>→ Roadmap</button>
+          </span>
+        )}
       </div>
     </div>
   );

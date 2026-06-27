@@ -62,6 +62,17 @@ function git(cwd, args) {
   } catch { return ''; }
 }
 
+// Normalise a git remote (ssh or https, with or without .git) into a browseable
+// https URL so the app's "Repo" button can open it. Returns null if unknown.
+function browseUrl(remote) {
+  if (!remote) return null;
+  const ssh = remote.match(/^git@([^:]+):(.+?)(?:\.git)?$/);   // git@host:owner/repo.git
+  if (ssh) return `https://${ssh[1]}/${ssh[2]}`;
+  const https = remote.match(/^https?:\/\/(.+?)(?:\.git)?$/);  // https://host/owner/repo.git
+  if (https) return `https://${https[1]}`;
+  return null;
+}
+
 function projectFromGit(cwd) {
   const remote = git(cwd, ['config', '--get', 'remote.origin.url']);
   const branch = git(cwd, ['rev-parse', '--abbrev-ref', 'HEAD']) || null;
@@ -77,7 +88,7 @@ function projectFromGit(cwd) {
     slug = name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
   }
   const commit = git(cwd, ['rev-parse', '--short', 'HEAD']) || null;
-  return { repo, name, slug, branch, commit };
+  return { repo, repo_url: browseUrl(remote), name, slug, branch, commit };
 }
 
 // ---- transcript parsing ----
@@ -322,7 +333,7 @@ async function aiSummary(t, project) {
   }
 
   const body = {
-    project: { slug: project.slug, name: project.name, repo: project.repo },
+    project: { slug: project.slug, name: project.name, repo: project.repo, repo_url: project.repo_url },
     session,
     extract,
   };

@@ -1,8 +1,9 @@
 import { useEffect, useState, type ReactNode } from 'react';
-import type { Roadmap as RoadmapData, RoadmapItem, Severity, Priority } from '../types';
+import type { Roadmap as RoadmapData, RoadmapItem, Note, Severity, Priority } from '../types';
 import {
   getProjectDetail, type ProjectDetailData,
-  createBug, createRoadmapItem, patchRoadmapItem, createNote, deleteNote,
+  createBug, createRoadmapItem, patchRoadmapItem,
+  createNote, patchNote, deleteNote, patchProject, deleteProject,
 } from '../store';
 import { go } from '../lib/route';
 import { Overview } from '../detail/Overview';
@@ -12,6 +13,7 @@ import { Notes } from '../detail/Notes';
 import { Activity } from '../detail/Activity';
 import { BugModal } from '../components/BugModal';
 import { RoadmapModal } from '../components/RoadmapModal';
+import { ConfirmModal } from '../components/ConfirmModal';
 
 type Tab = 'overview' | 'bugs' | 'roadmap' | 'notes' | 'activity';
 type BugFilter = 'all' | 'open' | 'fixing' | 'fixed';
@@ -74,8 +76,14 @@ function Detail({ data, setData }: { data: ProjectDetailData; setData: (d: Proje
   const [tab, setTab] = useState<Tab>('overview');
   const [bugFilter, setBugFilter] = useState<BugFilter>('all');
   const [highlightRef, setHighlightRef] = useState<string | null>(null);
-  const [bugModal, setBugModal] = useState(false);
-  const [roadModal, setRoadModal] = useState<{ open: boolean; priority: Priority }>({ open: false, priority: 'should' });
+  const [bugModal, setBugModal] = useState<{ open: boolean; title: string; fromNote: number | null }>(
+    { open: false, title: '', fromNote: null });
+  const [roadModal, setRoadModal] = useState<{ open: boolean; priority: Priority; title: string; fromNote: number | null }>(
+    { open: false, priority: 'should', title: '', fromNote: null });
+  const [promotedNote, setPromotedNote] = useState<{ id: number; kind: 'bug' | 'roadmap' } | null>(null);
+  const [confirmDelete, setConfirmDelete] = useState(false);
+  const [editingUrl, setEditingUrl] = useState<'site' | 'repo' | null>(null);
+  const [urlDraft, setUrlDraft] = useState('');
   const [actionError, setActionError] = useState('');
 
   const bugs = data.bugs;
@@ -96,15 +104,20 @@ function Detail({ data, setData }: { data: ProjectDetailData; setData: (d: Proje
   const addBug = ({ title, severity }: { title: string; severity: Severity }) =>
     guard(async () => {
       const bug = await createBug(slug, { title, severity });
+      const fromNote = bugModal.fromNote;
       setData({ ...data, bugs: [bug, ...bugs] });
-      setBugModal(false); setBugFilter('all');
+      setBugModal({ open: false, title: '', fromNote: null });
+      setBugFilter('all');
+      if (fromNote != null) setPromotedNote({ id: fromNote, kind: 'bug' });
     });
 
   const addRoad = ({ title, note, priority }: { title: string; note: string; priority: Priority }) =>
     guard(async () => {
       const item = await createRoadmapItem(slug, { title, note, bucket: priority });
+      const fromNote = roadModal.fromNote;
       setData({ ...data, roadmap: { ...roadmap, [priority]: [...roadmap[priority], item] } });
-      setRoadModal({ open: false, priority });
+      setRoadModal({ open: false, priority, title: '', fromNote: null });
+      if (fromNote != null) setPromotedNote({ id: fromNote, kind: 'roadmap' });
     });
 
   const toggleRoad = (item: RoadmapItem) =>
@@ -120,11 +133,49 @@ function Detail({ data, setData }: { data: ProjectDetailData; setData: (d: Proje
       setData({ ...data, notes: [note, ...notes] });
     });
 
+  const editNote = (nid: number, text: string) =>
+    guard(async () => {
+      const updated = await patchNote(slug, nid, { text });
+      setData({ ...data, notes: notes.map((n) => (n.id === nid ? updated : n)) });
+    });
+
   const removeNote = (nid: number) =>
     guard(async () => {
       await deleteNote(slug, nid);
       setData({ ...data, notes: notes.filter((n) => n.id !== nid) });
     });
+
+  // Promote a note into the existing create-bug / create-roadmap flow, prefilled.
+  const promoteNote = (note: Note, kind: 'bug' | 'roadmap') => {
+    if (kind === 'bug') setBugModal({ open: true, title: note.text, fromNote: note.id });
+    else setRoadModal({ open: true, priority: 'should', title: note.text, fromNote: note.id });
+  };
+
+  const keepPromotedNote = () => setPromotedNote(null);
+  const deletePromotedNote = () => {
+    const target = promotedNote;
+    if (!target) return;
+    setPromotedNote(null);
+    removeNote(target.id);
+  };
+
+  // ---- inline site/repo URL editing ----
+  const startUrl = (kind: 'site' | 'repo') => {
+    setUrlDraft(kind === 'site' ? project.siteUrl : project.repoUrl);
+    setEditingUrl(kind);
+  };
+  const saveUrl = () =>
+    guard(async () => {
+      const value = urlDraft.trim();
+      const updated = editingUrl === 'site'
+        ? await patchProject(slug, { site_url: value })
+        : await patchProject(slug, { repo_url: value });
+      setData({ ...data, project: { ...project, siteUrl: updated.siteUrl, repoUrl: updated.repoUrl } });
+      setEditingUrl(null);
+    });
+
+  const removeProject = () =>
+    guard(async () => { await deleteProject(slug); go.dashboard(); });
 
   const openBugLink = (hash: string) => { setHighlightRef(hash); setTab('activity'); };
   const viewAll = () => { setHighlightRef(null); setTab('activity'); };
@@ -155,8 +206,25 @@ function Detail({ data, setData }: { data: ProjectDetailData; setData: (d: Proje
             {project.subtitle && <div className="detail-sub">{project.subtitle}</div>}
           </div>
           <div className="head-actions">
-            <button className="btn-accent btn-visit" onClick={() => open(project.siteUrl)}>Visit site <span style={{ fontSize: 12 }}>↗</span></button>
-            <button className="btn-repo" onClick={() => open(project.repoUrl)}><span className="blk" />Repo</button>
+            {editingUrl ? (
+              <div className="url-edit">
+                <input className="field-input sm" autoFocus value={urlDraft}
+                  placeholder={editingUrl === 'site' ? 'https://your-site.example…' : 'https://github.com/owner/repo…'}
+                  onChange={(e) => setUrlDraft(e.target.value)}
+                  onKeyDown={(e) => { if (e.key === 'Enter') saveUrl(); else if (e.key === 'Escape') setEditingUrl(null); }} />
+                <button className="btn-submit sm" onClick={saveUrl}>Save</button>
+                <button className="btn-cancel sm" onClick={() => setEditingUrl(null)}>Cancel</button>
+              </div>
+            ) : (
+              <>
+                {project.siteUrl
+                  ? <button className="btn-accent btn-visit" onClick={() => open(project.siteUrl)}>Visit site <span style={{ fontSize: 12 }}>↗</span></button>
+                  : <button className="btn-visit btn-muted" onClick={() => startUrl('site')}>Set site URL</button>}
+                {project.repoUrl
+                  ? <button className="btn-repo" onClick={() => open(project.repoUrl)}><span className="blk" />Repo</button>
+                  : <button className="btn-repo btn-muted" onClick={() => startUrl('repo')}><span className="blk" />Set repo</button>}
+              </>
+            )}
           </div>
         </div>
 
@@ -174,22 +242,44 @@ function Detail({ data, setData }: { data: ProjectDetailData; setData: (d: Proje
         )}
         {tab === 'bugs' && (
           <Bugs bugs={bugs} filter={bugFilter} setFilter={setBugFilter}
-            onReport={() => setBugModal(true)} onOpenLink={openBugLink} />
+            onReport={() => setBugModal({ open: true, title: '', fromNote: null })} onOpenLink={openBugLink} />
         )}
         {tab === 'roadmap' && (
-          <Roadmap roadmap={roadmap} onAdd={(p) => setRoadModal({ open: true, priority: p })} onToggle={toggleRoad} />
+          <Roadmap roadmap={roadmap} onAdd={(p) => setRoadModal({ open: true, priority: p, title: '', fromNote: null })} onToggle={toggleRoad} />
         )}
         {tab === 'notes' && (
-          <Notes notes={notes} onAdd={addNote} onDelete={removeNote} />
+          <Notes notes={notes} onAdd={addNote} onEdit={editNote} onDelete={removeNote} onPromote={promoteNote} />
         )}
         {tab === 'activity' && (
           <Activity activity={activity} highlightRef={highlightRef} linkedBugId={linkedBugId} onClear={() => setHighlightRef(null)} />
         )}
+
+        <div className="danger-zone">
+          <button className="delete-project" onClick={() => setConfirmDelete(true)}>Delete this project</button>
+        </div>
       </div>
 
-      {bugModal && <BugModal onClose={() => setBugModal(false)} onSubmit={addBug} />}
+      {bugModal.open && (
+        <BugModal initialTitle={bugModal.title}
+          onClose={() => setBugModal({ open: false, title: '', fromNote: null })} onSubmit={addBug} />
+      )}
       {roadModal.open && (
-        <RoadmapModal initialPriority={roadModal.priority} onClose={() => setRoadModal({ open: false, priority: roadModal.priority })} onSubmit={addRoad} />
+        <RoadmapModal initialPriority={roadModal.priority} initialTitle={roadModal.title}
+          onClose={() => setRoadModal({ open: false, priority: roadModal.priority, title: '', fromNote: null })} onSubmit={addRoad} />
+      )}
+      {promotedNote && (
+        <ConfirmModal
+          title={promotedNote.kind === 'bug' ? 'Promoted to a bug' : 'Promoted to a roadmap item'}
+          body="Keep the original note, or delete it now that it's tracked elsewhere?"
+          confirmLabel="Delete note" cancelLabel="Keep note" danger
+          onConfirm={deletePromotedNote} onCancel={keepPromotedNote} />
+      )}
+      {confirmDelete && (
+        <ConfirmModal
+          title="Delete project?"
+          body={<>Permanently delete <b>{project.name}</b> and everything under it — its sessions, bugs, roadmap and notes. This can’t be undone.</>}
+          confirmLabel="Delete project" cancelLabel="Cancel" danger
+          onConfirm={removeProject} onCancel={() => setConfirmDelete(false)} />
       )}
     </div>
   );

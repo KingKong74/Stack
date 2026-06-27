@@ -74,6 +74,7 @@ export function projectListShape(p, { progress, metaLine, pushesThisWeek }) {
     pinned: p.pinned,
     siteUrl: p.site_url || '',
     repo: p.repo || '',
+    repoUrl: p.repo_url || '',
     pushesThisWeek,
   };
 }
@@ -87,6 +88,7 @@ export function projectDetailShape(p, { progress, metaLine, pushesThisWeek, acti
     inProgress: Array.isArray(p.in_progress) ? p.in_progress : [],
     nextUp: Array.isArray(p.next_up) ? p.next_up : [],
     workingWell: Array.isArray(p.working_well) ? p.working_well : [],
+    blockers: Array.isArray(p.blockers) ? p.blockers : [],
     ref: latest ? latest.hash : '',
     when: latest ? latest.when : relativeTime(p.last_session_at) || '',
     activity,

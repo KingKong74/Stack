@@ -21,6 +21,7 @@ CREATE TABLE IF NOT EXISTS projects (
 -- Project additions (resume card + dashboard fields).
 ALTER TABLE projects ADD COLUMN IF NOT EXISTS subtitle     TEXT;
 ALTER TABLE projects ADD COLUMN IF NOT EXISTS site_url     TEXT;
+ALTER TABLE projects ADD COLUMN IF NOT EXISTS repo_url     TEXT;  -- browseable repo URL (Repo button)
 ALTER TABLE projects ADD COLUMN IF NOT EXISTS tint         TEXT;
 ALTER TABLE projects ADD COLUMN IF NOT EXISTS in_progress  JSONB NOT NULL DEFAULT '[]'::jsonb;
 ALTER TABLE projects ADD COLUMN IF NOT EXISTS next_up      JSONB NOT NULL DEFAULT '[]'::jsonb;

@@ -4,9 +4,9 @@ import { Modal } from './Modal';
 import { SEVERITY_ORDER } from '../lib/ui';
 
 export function BugModal({
-  onClose, onSubmit,
-}: { onClose: () => void; onSubmit: (v: { title: string; severity: Severity }) => void }) {
-  const [title, setTitle] = useState('');
+  onClose, onSubmit, initialTitle = '',
+}: { onClose: () => void; onSubmit: (v: { title: string; severity: Severity }) => void; initialTitle?: string }) {
+  const [title, setTitle] = useState(initialTitle);
   const [severity, setSeverity] = useState<Severity>('medium');
   const submit = () => { if (title.trim()) onSubmit({ title, severity }); };
 

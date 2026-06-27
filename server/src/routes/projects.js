@@ -123,7 +123,7 @@ projects.get('/:slug', async (req, res) => {
 
 // Fields the client may PATCH directly on a project.
 const PATCHABLE = new Set([
-  'name', 'repo', 'subtitle', 'site_url', 'status', 'pinned',
+  'name', 'repo', 'repo_url', 'subtitle', 'site_url', 'status', 'pinned',
   'current_phase', 'summary', 'next_steps', 'blockers',
   'in_progress', 'next_up', 'working_well', 'tint',
 ]);

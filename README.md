@@ -20,9 +20,12 @@ constant (`web/src/lib/ui.ts` → `PRODUCT_NAME`) if you ever want to change it.
 
 ```
 stack/
-  web/      Vite + React + TypeScript frontend (the dashboard + detail UI)
-  server/   Express + Postgres API (ingest + projects + collections)
-  hook/     Claude Code SessionEnd hook — posts a checkpoint + extraction package per session
+  web/        Vite + React + TypeScript frontend (the dashboard + detail UI)
+  server/     Express + Postgres API (ingest + projects + collections)
+  hook/       Claude Code hooks — SessionStart injects "where you left off",
+              SessionEnd posts a checkpoint + extraction package per session
+  templates/  stack-agent-context.md — portable operating manual for a fresh agent
+  scripts/    stack-context.mjs — prints that template (optionally stamped) to stdout
   docker-compose.yml   db + server + web, for the mini-PC deploy
 ```
 
@@ -37,6 +40,11 @@ stack/
   refreshes the resume fields (COALESCE so a thin checkpoint never wipes a good summary), and lands
   auto-extracted bugs + roadmap items (deduped by fingerprint, tombstoned on delete, never touching
   manual items).
+- **The round-trip is closed:** a SessionStart hook injects a concise "where you left off" block at
+  the top of a new session, so the next session opens already knowing the state the last one left.
+- **The detail screen is hands-on:** the Visit-site and Repo buttons open the project's URLs (and let
+  you set them inline when unset), notes are editable in place and can be promoted to a bug or roadmap
+  item, and a project can be deleted (cascading its sessions, bugs, roadmap and notes).
 
 ## Run the full stack (compose)
 
@@ -68,20 +76,28 @@ Vite proxies `/api` to `http://localhost:4000`, so you need the **server running
 `cd server && npm install && npm run dev` with `DATABASE_URL` + `API_TOKEN` set). The app opens on
 the token gate; paste the same `API_TOKEN` to continue.
 
-## The SessionEnd hook (auto-fill "where you left off" + extraction)
+## The hooks (the round-trip)
 
-When a Claude Code session ends, the hook derives the project from your git remote/branch, captures
-the current commit (short `rev-parse`), parses the transcript, and — if `ANTHROPIC_API_KEY` is set —
-asks a cheap model for a structured summary **plus** the resume sub-lists, a couple of tags,
-candidate bugs and prioritised next-steps. It POSTs that package to `STACK_API/api/ingest`. Without
-an API key it falls back to the last-message summary and empty extraction lists. It never blocks
-Claude Code shutting down (always exits 0).
+Two zero-dependency Node hooks close the loop. Both derive the project the same way (git
+remote/branch, falling back to the directory name), load secrets from `~/.stack/env`, never print
+the token, and always exit 0 so they can't block or delay Claude Code.
+
+- **SessionEnd** — when a session ends, captures the current commit (short `rev-parse`), parses the
+  transcript, and — if `ANTHROPIC_API_KEY` is set — asks a cheap model for a structured summary
+  **plus** the resume sub-lists, a couple of tags, candidate bugs and prioritised next-steps. It
+  POSTs that package to `STACK_API/api/ingest`. Without an API key it falls back to the last-message
+  summary and empty extraction lists.
+- **SessionStart** — when a session starts or resumes, asks `STACK_API/api/projects/:slug` for the
+  project's current state and injects a concise "where you left off" block (resume summary, current
+  phase, in-progress / next-up / blockers, open-bug count, and the last few activity entries) using
+  the SessionStart hook's `additionalContext` mechanism. If the project isn't tracked yet or the API
+  is unreachable, it emits nothing and gets out of the way.
 
 Three-step install on whichever machine runs Claude Code:
 
 ```bash
-# 1. drop the script
-mkdir -p ~/.stack && cp hook/stack-session-end.mjs ~/.stack/
+# 1. drop both hook scripts
+mkdir -p ~/.stack && cp hook/stack-session-start.mjs hook/stack-session-end.mjs ~/.stack/
 
 # 2. create ~/.stack/env  (this file holds the secrets; never commit it)
 cat > ~/.stack/env <<'ENV'
@@ -92,12 +108,31 @@ ANTHROPIC_API_KEY=sk-ant-...
 ENV
 
 # 3. merge hook/settings.snippet.json into ~/.claude/settings.json
+#    (it registers both SessionStart and SessionEnd)
 ```
 
-Test it without a real session (fires a synthetic checkpoint with a demo bug + next-steps):
+Test them without a real session (the end hook fires a synthetic checkpoint with a demo bug +
+next-steps; the start hook prints the block it would inject for the current repo):
 
 ```bash
 node ~/.stack/stack-session-end.mjs --demo
+node ~/.stack/stack-session-start.mjs --demo
+```
+
+## The agent-context template
+
+`templates/stack-agent-context.md` is a portable operating manual a fresh Claude session can load to
+understand how to work with your projects through Stack — that state is auto-managed by the hooks (so
+trust the injected block), how to read live state from the API, the bearer-auth model, and the house
+rules. It's the single source of truth; if the API or hook contract changes, update that file.
+
+Export it (optionally stamped with a project's slug and your API base) and pipe it where you want it:
+
+```bash
+node scripts/stack-context.mjs                                  # the generic template
+node scripts/stack-context.mjs --slug stack --api https://stack.your-domain
+node scripts/stack-context.mjs --slug stack >> path/to/project/CLAUDE.md
+node scripts/stack-context.mjs --api https://stack.your-domain >> ~/.claude/CLAUDE.md
 ```
 
 ## Conventions

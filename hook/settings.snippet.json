@@ -1,5 +1,15 @@
 {
   "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"$HOME/.stack/stack-session-start.mjs\""
+          }
+        ]
+      }
+    ],
     "SessionEnd": [
       {
         "hooks": [

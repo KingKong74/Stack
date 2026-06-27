@@ -4,12 +4,13 @@ import { Modal } from './Modal';
 import { PRIORITY_META } from '../lib/ui';
 
 export function RoadmapModal({
-  initialPriority, onClose, onSubmit,
+  initialPriority, onClose, onSubmit, initialTitle = '',
 }: {
   initialPriority: Priority; onClose: () => void;
   onSubmit: (v: { title: string; note: string; priority: Priority }) => void;
+  initialTitle?: string;
 }) {
-  const [title, setTitle] = useState('');
+  const [title, setTitle] = useState(initialTitle);
   const [note, setNote] = useState('');
   const [priority, setPriority] = useState<Priority>(initialPriority);
   const submit = () => { if (title.trim()) onSubmit({ title, note, priority }); };

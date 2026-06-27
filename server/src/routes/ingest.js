@@ -38,7 +38,7 @@ function asStepCandidates(v) {
  *
  * Body shape (everything optional except a project identity):
  * {
- *   project: { slug?, name?, repo? },
+ *   project: { slug?, name?, repo?, repo_url? },
  *   session: {
  *     session_id?, commit_hash?, branch?, cwd?, model?, reason?, message_count?,
  *     summary?, current_phase?, next_steps?[], blockers?[],
@@ -65,6 +65,7 @@ ingest.post('/', async (req, res) => {
   const slug = slugify(p.slug || p.name || s.cwd?.split('/').pop());
   const name = (p.name || p.slug || slug).toString().slice(0, 200);
   const repo = str(p.repo, 300);
+  const repoUrl = str(p.repo_url, 500);
   const commit = str(s.commit_hash, 80);
 
   const session = {
@@ -103,19 +104,20 @@ ingest.post('/', async (req, res) => {
         `UPDATE projects
             SET name = $2,
                 repo = COALESCE($3, repo),
+                repo_url = COALESCE(repo_url, $4),   -- fill once; never overwrite a hand-set URL
                 last_session_at = now(),
                 updated_at = now()
           WHERE id = $1`,
-        [projectId, name, repo]
+        [projectId, name, repo, repoUrl]
       );
     } else {
       const { rows: cnt } = await client.query('SELECT count(*)::int AS n FROM projects');
       const tint = TINTS[cnt[0].n % TINTS.length];
       const ins = await client.query(
-        `INSERT INTO projects (slug, name, repo, tint, last_session_at)
-         VALUES ($1, $2, $3, $4, now())
+        `INSERT INTO projects (slug, name, repo, repo_url, tint, last_session_at)
+         VALUES ($1, $2, $3, $4, $5, now())
          RETURNING id`,
-        [slug, name, repo, tint]
+        [slug, name, repo, repoUrl, tint]
       );
       projectId = ins.rows[0].id;
     }

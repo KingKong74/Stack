@@ -41,6 +41,18 @@ notes.post('/', async (req, res) => {
   res.status(201).json(noteShape(rows[0]));
 });
 
+// PATCH /:id  -> edit a note's text (inline edit on the sticky)
+notes.patch('/:id', async (req, res) => {
+  const text = String(req.body?.text || '').trim().slice(0, 4000);
+  if (!text) return res.status(400).json({ error: 'Text is required.' });
+  const { rows } = await q(
+    'UPDATE notes SET text = $3, updated_at = now() WHERE project_id = $1 AND id = $2 RETURNING *',
+    [req.project.id, Number(req.params.id), text]
+  );
+  if (!rows.length) return res.status(404).json({ error: 'No such note.' });
+  res.json(noteShape(rows[0]));
+});
+
 // DELETE /:id
 notes.delete('/:id', async (req, res) => {
   const { rowCount } = await q(

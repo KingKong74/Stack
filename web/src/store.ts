@@ -62,7 +62,7 @@ const repoUrl = (repo: string): string =>
 
 interface ProjectPayload {
   slug: string; name: string; subtitle: string; tint: string | null; status: ProjectStatus;
-  progress: number; metaLine: string; pinned: boolean; siteUrl: string; repo: string;
+  progress: number; metaLine: string; pinned: boolean; siteUrl: string; repo: string; repoUrl: string;
   pushesThisWeek: number;
   // detail-only:
   summary?: string; currentPhase?: string;
@@ -94,7 +94,7 @@ function toProject(d: ProjectPayload): Project {
     progress: d.progress ?? 0,
     metaLine: d.metaLine || '',
     siteUrl: d.siteUrl || '',
-    repoUrl: repoUrl(d.repo || ''),
+    repoUrl: d.repoUrl || repoUrl(d.repo || ''),
     meta: {
       version: '—',
       lastDeploy: d.metaLine ? d.metaLine.replace(/^pushed /, '') : '—',
@@ -133,7 +133,7 @@ export async function createProject(input: { name: string; subtitle: string; sta
 
 export async function patchProject(
   slug: string,
-  patch: Partial<{ subtitle: string; site_url: string; status: ProjectStatus; pinned: boolean; name: string }>,
+  patch: Partial<{ subtitle: string; site_url: string; repo_url: string; status: ProjectStatus; pinned: boolean; name: string }>,
 ): Promise<Project> {
   return toProject(await request<ProjectPayload>(`/projects/${encodeURIComponent(slug)}`, { method: 'PATCH', body: patch }));
 }
@@ -193,6 +193,9 @@ export async function getNotes(slug: string): Promise<Note[]> {
 }
 export async function createNote(slug: string, input: { text: string; colour?: string }): Promise<Note> {
   return request<Note>(notesBase(slug), { method: 'POST', body: input });
+}
+export async function patchNote(slug: string, id: number, patch: { text: string }): Promise<Note> {
+  return request<Note>(`${notesBase(slug)}/${id}`, { method: 'PATCH', body: patch });
 }
 export async function deleteNote(slug: string, id: number): Promise<void> {
   await request<void>(`${notesBase(slug)}/${id}`, { method: 'DELETE' });
